@@ -1,11 +1,12 @@
-import { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useProgress } from '@react-three/drei';
-import { motion, AnimatePresence } from 'framer-motion';
 import { useStore } from '../../store/useStore';
 
 export default function Preloader() {
   const { progress } = useProgress();
   const { setScene, currentScene } = useStore();
+  const [shouldRender, setShouldRender] = useState(true);
+  const [fadeOut, setFadeOut] = useState(false);
 
   useEffect(() => {
     // When progress holds 100 for a bit, switch to entry scene
@@ -19,34 +20,44 @@ export default function Preloader() {
     }
   }, [progress, currentScene, setScene]);
 
+  useEffect(() => {
+    if (currentScene !== 'preloader') {
+      setFadeOut(true);
+      const timer = setTimeout(() => {
+        setShouldRender(false);
+      }, 1000); // Match opacity transition duration
+      return () => clearTimeout(timer);
+    }
+  }, [currentScene]);
+
+  if (!shouldRender) return null;
+
   return (
-    <AnimatePresence>
-      {currentScene === 'preloader' && (
-        <motion.div
-          className="preloader-container"
-          initial={{ opacity: 1 }}
-          exit={{ opacity: 0, transition: { duration: 1, ease: 'easeInOut' } }}
-        >
-          <motion.h1 
-            className="preloader-text"
-            animate={{ 
-              textShadow: ['0 0 10px rgba(0, 243, 255, 0.5)', '0 0 20px rgba(0, 243, 255, 0.9)', '0 0 10px rgba(0, 243, 255, 0.5)'] 
-            }}
-            transition={{ duration: 2, repeat: Infinity }}
-          >
-            Loading Systems...
-          </motion.h1>
-          <div className="progress-bar-bg">
-            <div 
-              className="progress-bar-fill" 
-              style={{ width: `${progress}%` }} 
-            />
-          </div>
-          <div style={{ marginTop: '10px', fontSize: '0.9rem', color: 'rgba(255,255,255,0.6)' }}>
-            {Math.round(progress)}%
-          </div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+    <div
+      className="preloader-container"
+      style={{
+        transition: 'opacity 1s ease-in-out',
+        opacity: fadeOut ? 0 : 1,
+        pointerEvents: fadeOut ? 'none' : 'auto'
+      }}
+    >
+      <h1 
+        className="preloader-text"
+        style={{
+          animation: 'preloader-glow 2s infinite'
+        }}
+      >
+        Loading Systems...
+      </h1>
+      <div className="progress-bar-bg">
+        <div 
+          className="progress-bar-fill" 
+          style={{ width: `${progress}%` }} 
+        />
+      </div>
+      <div style={{ marginTop: '10px', fontSize: '0.9rem', color: 'rgba(255,255,255,0.6)' }}>
+        {Math.round(progress)}%
+      </div>
+    </div>
   );
 }

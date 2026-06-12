@@ -29,6 +29,8 @@ const SWING_LIFT = 4.0; // vertical lift during swing
 export default function SpiderMan({
   spiderCtrl,
   cameraCtrl,
+  lightCtrl,
+  neonCtrl,
   pathPoints,
   debugVisuals,
   segmentAnimations: segAnimData,
@@ -63,6 +65,8 @@ export default function SpiderMan({
   const targetRotationRef = useRef(new THREE.Quaternion());
   const swingProgressRef = useRef(0); // swing animation progress
   const swingYRef = useRef(0); // vertical swing offset
+  const swingWebRef = useRef();
+  const shootWebRef = useRef();
 
   // ─── Resolved animation map ───
   const animMap = useMemo(() => {
@@ -77,29 +81,33 @@ export default function SpiderMan({
       jumpUp: findAnim(actions, 'jumpUp', 'jump_up', 'jumpup', 'jump'),
       strafeLeft: findAnim(actions, 'strafeLeft', 'strafe_left', 'starfeLeft', 'left', 'dodge'),
       strafeRight: findAnim(actions, 'strafeRight', 'strafe_right', 'starfeRight', 'starferight', 'right', 'dodge'),
+      moonwalk: findAnim(actions, 'moonwalk'),
+      hip_hop: findAnim(actions, 'hip_hop'),
+      webShoot: findAnim(actions, 'braceDrop', 'jumpUp'),
     };
   }, [actions]);
 
   // ─── Character Lighting Controls (Leva) ───
   const charLight = useControls('Character Lighting', {
-    key_intensity: { value: 5, min: 0, max: 30, step: 0.5, label: 'Key Intensity' },
-    key_color: { value: '#ffffff', label: 'Key Color' },
-    key_x: { value: 0, min: -0.1, max: 0.1, step: 0.002, label: 'Key X' },
-    key_y: { value: 0.03, min: -0.1, max: 0.1, step: 0.002, label: 'Key Y' },
-    key_z: { value: 0.04, min: -0.1, max: 0.1, step: 0.002, label: 'Key Z' },
-    key_distance: { value: 0.2, min: 0.01, max: 1, step: 0.01, label: 'Key Distance' },
-    fill_intensity: { value: 2, min: 0, max: 20, step: 0.5, label: 'Fill Intensity' },
-    fill_color: { value: '#ffffff', label: 'Fill Color' },
-    fill_x: { value: -0.04, min: -0.1, max: 0.1, step: 0.002, label: 'Fill X' },
-    fill_y: { value: 0.02, min: -0.1, max: 0.1, step: 0.002, label: 'Fill Y' },
-    fill_z: { value: 0, min: -0.1, max: 0.1, step: 0.002, label: 'Fill Z' },
-    fill_distance: { value: 0.15, min: 0.01, max: 1, step: 0.01, label: 'Fill Distance' },
-    rim_intensity: { value: 3, min: 0, max: 20, step: 0.5, label: 'Rim Intensity' },
-    rim_color: { value: '#ffffff', label: 'Rim Color' },
-    rim_x: { value: 0.03, min: -0.1, max: 0.1, step: 0.002, label: 'Rim X' },
-    rim_y: { value: 0.03, min: -0.1, max: 0.1, step: 0.002, label: 'Rim Y' },
-    rim_z: { value: -0.04, min: -0.1, max: 0.1, step: 0.002, label: 'Rim Z' },
-    rim_distance: { value: 0.15, min: 0.01, max: 1, step: 0.01, label: 'Rim Distance' },
+    match_scene: { value: true, label: 'Match Environment' },
+    key_intensity: { value: 5, min: 0, max: 30, step: 0.5, label: 'Key Intensity', hidden: (get) => get('Character Lighting.match_scene') },
+    key_color: { value: '#ffffff', label: 'Key Color', hidden: (get) => get('Character Lighting.match_scene') },
+    key_x: { value: 0, min: -0.1, max: 0.1, step: 0.002, label: 'Key X', hidden: (get) => get('Character Lighting.match_scene') },
+    key_y: { value: 0.03, min: -0.1, max: 0.1, step: 0.002, label: 'Key Y', hidden: (get) => get('Character Lighting.match_scene') },
+    key_z: { value: 0.04, min: -0.1, max: 0.1, step: 0.002, label: 'Key Z', hidden: (get) => get('Character Lighting.match_scene') },
+    key_distance: { value: 0.2, min: 0.01, max: 1, step: 0.01, label: 'Key Distance', hidden: (get) => get('Character Lighting.match_scene') },
+    fill_intensity: { value: 2, min: 0, max: 20, step: 0.5, label: 'Fill Intensity', hidden: (get) => get('Character Lighting.match_scene') },
+    fill_color: { value: '#ffffff', label: 'Fill Color', hidden: (get) => get('Character Lighting.match_scene') },
+    fill_x: { value: -0.04, min: -0.1, max: 0.1, step: 0.002, label: 'Fill X', hidden: (get) => get('Character Lighting.match_scene') },
+    fill_y: { value: 0.02, min: -0.1, max: 0.1, step: 0.002, label: 'Fill Y', hidden: (get) => get('Character Lighting.match_scene') },
+    fill_z: { value: 0, min: -0.1, max: 0.1, step: 0.002, label: 'Fill Z', hidden: (get) => get('Character Lighting.match_scene') },
+    fill_distance: { value: 0.15, min: 0.01, max: 1, step: 0.01, label: 'Fill Distance', hidden: (get) => get('Character Lighting.match_scene') },
+    rim_intensity: { value: 3, min: 0, max: 20, step: 0.5, label: 'Rim Intensity', hidden: (get) => get('Character Lighting.match_scene') },
+    rim_color: { value: '#ffffff', label: 'Rim Color', hidden: (get) => get('Character Lighting.match_scene') },
+    rim_x: { value: 0.03, min: -0.1, max: 0.1, step: 0.002, label: 'Rim X', hidden: (get) => get('Character Lighting.match_scene') },
+    rim_y: { value: 0.03, min: -0.1, max: 0.1, step: 0.002, label: 'Rim Y', hidden: (get) => get('Character Lighting.match_scene') },
+    rim_z: { value: -0.04, min: -0.1, max: 0.1, step: 0.002, label: 'Rim Z', hidden: (get) => get('Character Lighting.match_scene') },
+    rim_distance: { value: 0.15, min: 0.01, max: 1, step: 0.01, label: 'Rim Distance', hidden: (get) => get('Character Lighting.match_scene') },
   });
 
   // ─── Keep original materials — just enable shadows ───
@@ -215,6 +223,21 @@ export default function SpiderMan({
         if (anim) playAnimation(anim, { fadeIn: 0.15 });
         break;
       }
+      case 'webShoot': {
+        const anim = animMap.webShoot || animMap.idle;
+        if (anim) playAnimation(anim, { fadeIn: 0.1, timeScale: 1.5 });
+        break;
+      }
+      case 'moonwalk': {
+        const anim = animMap.moonwalk || animMap.run || animMap.idle;
+        if (anim) playAnimation(anim, { fadeIn: 0.15 });
+        break;
+      }
+      case 'hip_hop': {
+        const anim = animMap.hip_hop || animMap.idle;
+        if (anim) playAnimation(anim, { fadeIn: 0.15 });
+        break;
+      }
       default: {
         const anim = animMap.idle || Object.keys(actions)[0];
         if (anim) playAnimation(anim, { fadeIn: 0.25 });
@@ -269,6 +292,32 @@ export default function SpiderMan({
     const vectors = pathPoints.map((p) => new THREE.Vector3(p.x, p.y, p.z));
     return new THREE.CatmullRomCurve3(vectors);
   }, [pathPoints]);
+
+  // Initialize play mode fraction from closest point on path to editor settled position
+  useEffect(() => {
+    if (!editorMode && pathCurve && spiderManPos) {
+      let minDistance = Infinity;
+      let closestFraction = 0;
+      const samples = 100;
+      const tempVector = new THREE.Vector3();
+      const targetVector = new THREE.Vector3(spiderManPos.x, spiderManPos.y, spiderManPos.z);
+      
+      for (let i = 0; i <= samples; i++) {
+        const t = i / samples;
+        pathCurve.getPointAt(t, tempVector);
+        const dist = tempVector.distanceTo(targetVector);
+        if (dist < minDistance) {
+          minDistance = dist;
+          closestFraction = t;
+        }
+      }
+      fractionRef.current = closestFraction;
+      console.log(`[SpiderMan] Synced starting path fraction to ${closestFraction.toFixed(3)} based on editor position`);
+    } else if (editorMode) {
+      fractionRef.current = 0;
+      speedRef.current = 0;
+    }
+  }, [editorMode, pathCurve, spiderManPos]);
 
   // ─── Temp vectors (reuse to avoid GC) ───
   const _posOnCurve = useMemo(() => new THREE.Vector3(), []);
@@ -410,6 +459,47 @@ export default function SpiderMan({
 
     _lookTarget.set(_worldPos.x, _worldPos.y + 1, _worldPos.z);
     state.camera.lookAt(_lookTarget);
+
+    // ── Directional Light Follow (Shadows) ──
+    const dirLight = state.scene.getObjectByName('mainDirLight');
+    if (dirLight) {
+      const dirX = lightCtrl?.directional_x ?? 5;
+      const dirY = lightCtrl?.directional_y ?? 10;
+      const dirZ = lightCtrl?.directional_z ?? 5;
+      dirLight.position.set(
+        group.current.position.x + dirX,
+        group.current.position.y + dirY,
+        group.current.position.z + dirZ
+      );
+      dirLight.target.position.set(
+        group.current.position.x,
+        group.current.position.y,
+        group.current.position.z
+      );
+      dirLight.target.updateMatrixWorld();
+    }
+
+    // ─── Web Line Coordinates Update ───
+    const isShooting = storeState.playerAction === 'webShoot';
+
+    if (currentlySwinging && swingWebRef.current) {
+      const start = group.current.position.clone().add(new THREE.Vector3(0, 0.8, 0));
+      const anchor = new THREE.Vector3(start.x, start.y + 12 - swingYRef.current * 0.4, start.z - 3);
+      swingWebRef.current.geometry.setFromPoints([start, anchor]);
+      swingWebRef.current.visible = true;
+    } else if (swingWebRef.current) {
+      swingWebRef.current.visible = false;
+    }
+
+    if (isShooting && shootWebRef.current) {
+      const start = group.current.position.clone().add(new THREE.Vector3(0, 0.8, 0));
+      const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(group.current.quaternion).normalize();
+      const end = start.clone().add(forward.multiplyScalar(20));
+      shootWebRef.current.geometry.setFromPoints([start, end]);
+      shootWebRef.current.visible = true;
+    } else if (shootWebRef.current) {
+      shootWebRef.current.visible = false;
+    }
   });
 
   // Path line geometry
@@ -417,6 +507,50 @@ export default function SpiderMan({
     if (!pathCurve) return null;
     return new THREE.BufferGeometry().setFromPoints(pathCurve.getPoints(50));
   }, [pathCurve]);
+
+  // ─── Character Lighting Calculations ───
+  const isAlley = currentScene === 'entry';
+  const activeKeyColor = charLight.match_scene
+    ? (isAlley ? (neonCtrl?.neon1_color ?? '#00f3ff') : '#ffaa44')
+    : charLight.key_color;
+
+  const activeKeyIntensity = charLight.match_scene
+    ? (isAlley ? 6 : 8)
+    : charLight.key_intensity;
+
+  const activeKeyPos = charLight.match_scene
+    ? [0, 0.03, 0.04]
+    : [charLight.key_x, charLight.key_y, charLight.key_z];
+
+  const activeKeyDistance = charLight.match_scene ? 0.25 : charLight.key_distance;
+
+  const activeFillColor = charLight.match_scene
+    ? (isAlley ? (lightCtrl?.ambient_color ?? '#111122') : (lightCtrl?.ambient_color ?? '#223344'))
+    : charLight.fill_color;
+
+  const activeFillIntensity = charLight.match_scene
+    ? (isAlley ? 2.5 : 4)
+    : charLight.fill_intensity;
+
+  const activeFillPos = charLight.match_scene
+    ? [-0.04, 0.02, 0]
+    : [charLight.fill_x, charLight.fill_y, charLight.fill_z];
+
+  const activeFillDistance = charLight.match_scene ? 0.2 : charLight.fill_distance;
+
+  const activeRimColor = charLight.match_scene
+    ? (isAlley ? (neonCtrl?.neon3_color ?? '#ff0055') : '#88ccff')
+    : charLight.rim_color;
+
+  const activeRimIntensity = charLight.match_scene
+    ? (isAlley ? 5 : 6)
+    : charLight.rim_intensity;
+
+  const activeRimPos = charLight.match_scene
+    ? [0.03, 0.03, -0.04]
+    : [charLight.rim_x, charLight.rim_y, charLight.rim_z];
+
+  const activeRimDistance = charLight.match_scene ? 0.2 : charLight.rim_distance;
 
   return (
     <>
@@ -434,35 +568,45 @@ export default function SpiderMan({
       >
         <primitive object={scene} />
 
-        {/* ─── Character Lighting — all controllable via Leva ─── */}
-        {editorMode && (
-          <>
-            {/* Key light */}
-            <pointLight
-              position={[charLight.key_x, charLight.key_y, charLight.key_z]}
-              intensity={charLight.key_intensity}
-              color={charLight.key_color}
-              distance={charLight.key_distance}
-              decay={2}
-            />
-            {/* Fill light */}
-            <pointLight
-              position={[charLight.fill_x, charLight.fill_y, charLight.fill_z]}
-              intensity={charLight.fill_intensity}
-              color={charLight.fill_color}
-              distance={charLight.fill_distance}
-              decay={2}
-            />
-            {/* Rim light */}
-            <pointLight
-              position={[charLight.rim_x, charLight.rim_y, charLight.rim_z]}
-              intensity={charLight.rim_intensity}
-              color={charLight.rim_color}
-              distance={charLight.rim_distance}
-              decay={2}
-            />
-          </>
-        )}
+        {/* ─── Character Lighting — dynamic environment or manual ─── */}
+        <group>
+          {/* Key light */}
+          <pointLight
+            position={activeKeyPos}
+            intensity={activeKeyIntensity}
+            color={activeKeyColor}
+            distance={activeKeyDistance}
+            decay={2}
+          />
+          {/* Fill light */}
+          <pointLight
+            position={activeFillPos}
+            intensity={activeFillIntensity}
+            color={activeFillColor}
+            distance={activeFillDistance}
+            decay={2}
+          />
+          {/* Rim light */}
+          <pointLight
+            position={activeRimPos}
+            intensity={activeRimIntensity}
+            color={activeRimColor}
+            distance={activeRimDistance}
+            decay={2}
+          />
+        </group>
+
+        {/* Swing Web Line */}
+        <line ref={swingWebRef}>
+          <bufferGeometry />
+          <lineBasicMaterial color="#ffffff" linewidth={3} transparent opacity={0.85} />
+        </line>
+        
+        {/* Shoot Web Line */}
+        <line ref={shootWebRef}>
+          <bufferGeometry />
+          <lineBasicMaterial color="#ffffff" linewidth={4} transparent opacity={0.95} />
+        </line>
 
         {/* Selection indicator */}
         {editorMode && isSelected && (
@@ -471,15 +615,21 @@ export default function SpiderMan({
             <meshBasicMaterial color="#00f3ff" />
           </mesh>
         )}
-        {/* Label */}
-        {editorMode && (
-          <Html center position={[0, 0.03, 0]} distanceFactor={0.08} style={{ pointerEvents: 'none' }}>
-            <div className="editor-3d-label label-spider">
-              Spider-Man
-              {activeAnimation && <span className="label-anim"> — {activeAnimation}</span>}
-            </div>
-          </Html>
-        )}
+        {/* Label (always mounted, hidden via visibility style to prevent Drei Html removeChild crashes) */}
+        <Html
+          center
+          position={[0, 0.03, 0]}
+          distanceFactor={0.08}
+          style={{
+            pointerEvents: 'none',
+            display: editorMode ? 'block' : 'none'
+          }}
+        >
+          <div className="editor-3d-label label-spider">
+            Spider-Man
+            {activeAnimation && <span className="label-anim"> — {activeAnimation}</span>}
+          </div>
+        </Html>
       </group>
 
       {/* Path Line */}

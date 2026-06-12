@@ -7,6 +7,7 @@ export default function CityScene({ cityCtrl, ...props }) {
 
   useEffect(() => {
     scene.traverse((child) => {
+      child.matrixAutoUpdate = true;
       if (child.isMesh) {
         child.receiveShadow = true;
         child.castShadow = true;
@@ -19,6 +20,8 @@ export default function CityScene({ cityCtrl, ...props }) {
   const z = cityCtrl?.city_z ?? 0;
   const rotY = THREE.MathUtils.degToRad(cityCtrl?.city_rotation_y ?? 0);
   const scale = cityCtrl?.city_scale ?? 1;
+
+  console.log('[CityScene] rendering position coordinates:', { x, y, z, rotY, scale });
 
   return (
     <group

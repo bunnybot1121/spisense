@@ -1,55 +1,78 @@
+import React, { useState, useEffect } from 'react';
 import { useStore } from '../../store/useStore';
-import { motion, AnimatePresence } from 'framer-motion';
 
 export default function EntryUI() {
   const { currentScene, setScene } = useStore();
+  const [shouldRender, setShouldRender] = useState(false);
+  const [fadeIn, setFadeIn] = useState(false);
 
-  if (currentScene !== 'entry') return null;
+  useEffect(() => {
+    if (currentScene === 'entry') {
+      setShouldRender(true);
+      const timer = setTimeout(() => {
+        setFadeIn(true);
+      }, 100);
+      return () => clearTimeout(timer);
+    } else if (shouldRender) {
+      setFadeIn(false);
+      const timer = setTimeout(() => {
+        setShouldRender(false);
+      }, 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [currentScene]);
+
+  if (!shouldRender) return null;
 
   return (
-    <AnimatePresence>
-      <motion.div
-        initial={{ opacity: 0 }}
-        animate={{ opacity: 1 }}
-        transition={{ duration: 2, delay: 1 }}
+    <div
+      style={{
+        position: 'absolute',
+        bottom: '50px',
+        left: '50px',
+        zIndex: 10,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: '20px',
+        transition: 'opacity 1.5s ease-in-out',
+        opacity: fadeIn ? 1 : 0,
+        pointerEvents: fadeIn ? 'auto' : 'none'
+      }}
+    >
+      <div className="glass-panel" style={{ padding: '20px', borderRadius: '12px', maxWidth: '400px' }}>
+        <p style={{ fontFamily: 'Outfit', fontSize: '1.2rem', lineHeight: '1.5', color: 'var(--accent-cyan)' }}>
+          <span style={{ marginRight: '10px' }}>🕷️</span>
+          "You're inside his system now."
+        </p>
+      </div>
+      
+      <button
+        onClick={() => setScene('city')}
+        className="glass-panel"
         style={{
-          position: 'absolute',
-          bottom: '50px',
-          left: '50px',
-          zIndex: 10,
-          display: 'flex',
-          flexDirection: 'column',
-          gap: '20px'
+          padding: '15px 30px',
+          border: '1px solid var(--accent-cyan)',
+          borderRadius: '8px',
+          cursor: 'pointer',
+          fontSize: '1.1rem',
+          fontFamily: 'Outfit',
+          fontWeight: 'bold',
+          color: '#fff',
+          alignSelf: 'flex-start',
+          background: 'rgba(0, 243, 255, 0.1)',
+          transition: 'transform 0.2s, box-shadow 0.2s',
+        }}
+        onMouseEnter={(e) => {
+          e.target.style.transform = 'scale(1.05)';
+          e.target.style.boxShadow = '0 0 15px var(--accent-cyan)';
+        }}
+        onMouseLeave={(e) => {
+          e.target.style.transform = 'scale(1)';
+          e.target.style.boxShadow = 'none';
         }}
       >
-        <div className="glass-panel" style={{ padding: '20px', borderRadius: '12px', maxWidth: '400px' }}>
-          <p style={{ fontFamily: 'Outfit', fontSize: '1.2rem', lineHeight: '1.5', color: 'var(--accent-cyan)' }}>
-            <span style={{ marginRight: '10px' }}>🕷️</span>
-            "You're inside his system now."
-          </p>
-        </div>
-        
-        <motion.button
-          whileHover={{ scale: 1.05, boxShadow: '0 0 15px var(--accent-cyan)' }}
-          whileTap={{ scale: 0.95 }}
-          onClick={() => setScene('city')}
-          className="glass-panel"
-          style={{
-            padding: '15px 30px',
-            border: '1px solid var(--accent-cyan)',
-            borderRadius: '8px',
-            cursor: 'pointer',
-            fontSize: '1.1rem',
-            fontFamily: 'Outfit',
-            fontWeight: 'bold',
-            color: '#fff',
-            alignSelf: 'flex-start',
-            background: 'rgba(0, 243, 255, 0.1)'
-          }}
-        >
-          Enter The City
-        </motion.button>
-      </motion.div>
-    </AnimatePresence>
+        Enter The City
+      </button>
+    </div>
   );
 }

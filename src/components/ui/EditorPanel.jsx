@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { motion } from 'framer-motion';
 
 export default function EditorPanel({
   selectedType,
@@ -11,8 +10,12 @@ export default function EditorPanel({
   spiderManRotY,
   spiderManScale,
   cameraCtrl,
-  lightCtrl,
+  lightAlleyCtrl,
+  lightCityCtrl,
+  neonAlleyCtrl,
+  neonCityCtrl,
   alleyCtrl,
+  currentScene,
   onAddPoint,
   onRemovePoint,
   onSegmentAnimationChange,
@@ -21,9 +24,18 @@ export default function EditorPanel({
   onToggleEditorMode,
   activeAnimation,
   onActiveAnimationChange,
+  previewPlayCamera,
+  onTogglePreviewPlayCamera,
+  onResetToDefaults,
+  onSaveFixedSetup,
+  onLoadFixedSetup,
 }) {
   const [showHelp, setShowHelp] = useState(true);
   const [copied, setCopied] = useState(false);
+  const [hasFixedSetup, setHasFixedSetup] = useState(() => !!localStorage.getItem('spisense_fixed_config'));
+  const [saveNotify, setSaveNotify] = useState(false);
+
+  const activeNeonCtrl = currentScene === 'entry' ? neonAlleyCtrl : neonCityCtrl;
 
   const handleCopyValues = () => {
     const output = {
@@ -40,7 +52,10 @@ export default function EditorPanel({
         animation: segmentAnimations[i] || animationNames[0] || 'idle',
       })),
       camera: cameraCtrl || {},
-      lighting: lightCtrl || {},
+      lightingAlley: lightAlleyCtrl || {},
+      lightingCity: lightCityCtrl || {},
+      neonAlley: neonAlleyCtrl || {},
+      neonCity: neonCityCtrl || {},
       alleyModel: alleyCtrl || {},
     };
     const json = JSON.stringify(output, null, 2);
@@ -55,11 +70,12 @@ export default function EditorPanel({
   };
 
   return (
-    <motion.div
+    <div
       className="editor-panel glass-panel"
-      initial={{ x: 320 }}
-      animate={{ x: 0 }}
-      transition={{ type: 'spring', stiffness: 200, damping: 25 }}
+      style={{
+        transform: 'translateX(0)',
+        transition: 'transform 0.4s cubic-bezier(0.25, 0.8, 0.25, 1)'
+      }}
     >
       {/* Header */}
       <div className="editor-header">
@@ -92,6 +108,17 @@ export default function EditorPanel({
               <span className="editor-badge badge-spider">Spider-Man</span>
               <span className="editor-coords">
                 x:{spiderManPos.x?.toFixed(1)} y:{spiderManPos.y?.toFixed(1)} z:{spiderManPos.z?.toFixed(1)}
+              </span>
+            </div>
+          ) : ['neon1', 'neon2', 'neon3'].includes(selectedType) ? (
+            <div className="editor-selected-info">
+              <span className="editor-badge badge-neon" style={{ borderColor: activeNeonCtrl?.[`${selectedType}_color`], color: activeNeonCtrl?.[`${selectedType}_color`] }}>
+                Neon {selectedType.slice(-1)}
+              </span>
+              <span className="editor-coords">
+                x:{activeNeonCtrl?.[`${selectedType}_x`]?.toFixed(1)} 
+                y:{activeNeonCtrl?.[`${selectedType}_y`]?.toFixed(1)} 
+                z:{activeNeonCtrl?.[`${selectedType}_z`]?.toFixed(1)}
               </span>
             </div>
           ) : (
@@ -172,6 +199,91 @@ export default function EditorPanel({
           )}
         </div>
 
+        {/* Editor Settings */}
+        <div className="editor-section">
+          <h3>⚙️ Editor Settings</h3>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', marginBottom: '8px' }}>
+            <button
+              className={`editor-btn-sm ${previewPlayCamera ? 'active' : ''}`}
+              onClick={onTogglePreviewPlayCamera}
+              style={{
+                width: '100%',
+                borderColor: previewPlayCamera ? 'var(--accent-cyan)' : 'rgba(255, 255, 255, 0.1)',
+                color: previewPlayCamera ? 'var(--accent-cyan)' : 'rgba(255, 255, 255, 0.8)',
+                background: previewPlayCamera ? 'rgba(0, 243, 255, 0.12)' : 'rgba(255, 255, 255, 0.05)',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '4px',
+                padding: '8px 12px',
+                fontSize: '0.72rem',
+                borderRadius: '6px',
+                cursor: 'pointer'
+              }}
+            >
+              📷 {previewPlayCamera ? 'Camera Play View' : 'Camera Free View'}
+            </button>
+
+            <div style={{ display: 'flex', gap: '6px' }}>
+              <button
+                className="editor-btn-sm"
+                onClick={() => {
+                  onSaveFixedSetup?.();
+                  setHasFixedSetup(true);
+                  setSaveNotify(true);
+                  setTimeout(() => setSaveNotify(false), 2000);
+                }}
+                style={{
+                  flex: 1,
+                  padding: '8px 4px',
+                  fontSize: '0.68rem',
+                  borderRadius: '6px',
+                  border: '1px solid rgba(0, 243, 255, 0.25)',
+                  background: 'rgba(0, 243, 255, 0.06)',
+                  color: 'var(--accent-cyan)',
+                  cursor: 'pointer'
+                }}
+              >
+                📌 {saveNotify ? 'Saved!' : 'Save Fixed'}
+              </button>
+              <button
+                className="editor-btn-sm"
+                onClick={onLoadFixedSetup}
+                disabled={!hasFixedSetup}
+                style={{
+                  flex: 1,
+                  padding: '8px 4px',
+                  fontSize: '0.68rem',
+                  borderRadius: '6px',
+                  border: hasFixedSetup ? '1px solid rgba(0, 255, 136, 0.25)' : '1px solid rgba(255, 255, 255, 0.05)',
+                  background: hasFixedSetup ? 'rgba(0, 255, 136, 0.06)' : 'transparent',
+                  color: hasFixedSetup ? 'var(--accent-green)' : 'rgba(255,255,255,0.2)',
+                  cursor: hasFixedSetup ? 'pointer' : 'not-allowed',
+                  opacity: hasFixedSetup ? 1 : 0.4
+                }}
+              >
+                ⚡ Load Fixed
+              </button>
+            </div>
+          </div>
+          <button
+            className="editor-btn-sm editor-btn-danger"
+            onClick={onResetToDefaults}
+            style={{
+              width: '100%',
+              padding: '8px',
+              fontSize: '0.72rem',
+              borderRadius: '6px',
+              border: '1px solid rgba(255, 0, 85, 0.2)',
+              background: 'rgba(255, 0, 85, 0.05)',
+              color: 'var(--accent-red)',
+              cursor: 'pointer'
+            }}
+          >
+            🔄 Reset Defaults
+          </button>
+        </div>
+
         {/* Copy Values */}
         <div className="editor-section">
           <button className="editor-btn-copy" onClick={handleCopyValues}>
@@ -199,6 +311,6 @@ export default function EditorPanel({
         </div>
 
       </div>
-    </motion.div>
+    </div>
   );
 }

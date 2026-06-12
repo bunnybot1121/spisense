@@ -7,13 +7,22 @@ const KEY_BACKWARD = new Set(['s', 'S', 'ArrowDown']);
 const KEY_LEFT = new Set(['a', 'A', 'ArrowLeft']);
 const KEY_RIGHT = new Set(['d', 'D', 'ArrowRight']);
 const KEY_SWING = new Set([' ']); // Space
+const KEY_SHOOT = new Set(['e', 'E']);
+const KEY_MOONWALK = new Set(['m', 'M']);
+const KEY_DANCE = new Set(['h', 'H']);
 
 function getActionFromKeys(keys) {
+  const hasShoot = [...keys].some((k) => KEY_SHOOT.has(k));
+  const hasMoonwalk = [...keys].some((k) => KEY_MOONWALK.has(k));
+  const hasDance = [...keys].some((k) => KEY_DANCE.has(k));
   const hasForward = [...keys].some((k) => KEY_FORWARD.has(k));
   const hasBackward = [...keys].some((k) => KEY_BACKWARD.has(k));
   const hasLeft = [...keys].some((k) => KEY_LEFT.has(k));
   const hasRight = [...keys].some((k) => KEY_RIGHT.has(k));
 
+  if (hasShoot) return 'webShoot';
+  if (hasMoonwalk) return 'moonwalk';
+  if (hasDance) return 'hip_hop';
   if (hasForward) return 'runForward';
   if (hasBackward) return 'runBackward';
   if (hasLeft) return 'strafeLeft';
@@ -176,14 +185,69 @@ export default function GameControls() {
             </button>
           </div>
 
-          {/* Swing Button */}
-          <button
-            className={`game-swing-btn ${isSwinging ? 'swinging' : ''}`}
-            onTouchStart={(e) => { e.preventDefault(); handleSwingTouch(); }}
-          >
-            <span className="swing-icon">🕸️</span>
-            <span className="swing-label">{isSwinging ? 'RELEASE' : 'SWING'}</span>
-          </button>
+          {/* Action Buttons Column */}
+          <div style={{ display: 'flex', gap: '8px', flexDirection: 'column', alignItems: 'center' }}>
+            {/* Swing Button */}
+            <button
+              className={`game-swing-btn ${isSwinging ? 'swinging' : ''}`}
+              onTouchStart={(e) => { e.preventDefault(); handleSwingTouch(); }}
+              style={{ width: '76px', height: '76px' }}
+            >
+              <span className="swing-icon" style={{ fontSize: '1.2rem' }}>🕸️</span>
+              <span className="swing-label" style={{ fontSize: '0.55rem' }}>{isSwinging ? 'RELEASE' : 'SWING'}</span>
+            </button>
+
+            {/* Web Shoot Button */}
+            <button
+              className="game-swing-btn"
+              onTouchStart={(e) => { e.preventDefault(); handleTouchAction('webShoot'); }}
+              onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd(); }}
+              style={{
+                width: '60px',
+                height: '60px',
+                border: '2px solid rgba(0, 243, 255, 0.3)',
+                background: 'rgba(0, 243, 255, 0.1)',
+                color: 'var(--accent-cyan)'
+              }}
+            >
+              <span className="swing-icon" style={{ fontSize: '1rem' }}>💥</span>
+              <span className="swing-label" style={{ fontSize: '0.5rem' }}>WEB</span>
+            </button>
+
+            {/* Moonwalk Button */}
+            <button
+              className="game-swing-btn"
+              onTouchStart={(e) => { e.preventDefault(); handleTouchAction('moonwalk'); }}
+              onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd(); }}
+              style={{
+                width: '56px',
+                height: '56px',
+                border: '2px solid rgba(0, 255, 136, 0.3)',
+                background: 'rgba(0, 255, 136, 0.1)',
+                color: 'var(--accent-green)'
+              }}
+            >
+              <span className="swing-icon" style={{ fontSize: '0.9rem' }}>🕺</span>
+              <span className="swing-label" style={{ fontSize: '0.45rem' }}>MOON</span>
+            </button>
+
+            {/* Dance Button */}
+            <button
+              className="game-swing-btn"
+              onTouchStart={(e) => { e.preventDefault(); handleTouchAction('hip_hop'); }}
+              onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd(); }}
+              style={{
+                width: '56px',
+                height: '56px',
+                border: '2px solid rgba(157, 0, 255, 0.3)',
+                background: 'rgba(157, 0, 255, 0.1)',
+                color: 'var(--accent-purple)'
+              }}
+            >
+              <span className="swing-icon" style={{ fontSize: '0.9rem' }}>🎶</span>
+              <span className="swing-label" style={{ fontSize: '0.45rem' }}>DANCE</span>
+            </button>
+          </div>
         </div>
       )}
 
@@ -198,8 +262,11 @@ export default function GameControls() {
             <span className="kb-key">S</span>
             <span className="kb-key">D</span>
           </div>
-          <div className="kb-row">
-            <span className="kb-key wide">SPACE — Swing</span>
+          <div className="kb-row" style={{ marginTop: '8px', display: 'flex', gap: '6px' }}>
+            <span className="kb-key wide" style={{ color: 'var(--accent-red)', borderColor: 'rgba(255, 0, 85, 0.3)' }}>SPACE — Swing</span>
+            <span className="kb-key" style={{ color: 'var(--accent-cyan)', borderColor: 'rgba(0, 243, 255, 0.3)' }}>E — Web</span>
+            <span className="kb-key" style={{ color: 'var(--accent-green)', borderColor: 'rgba(0, 255, 136, 0.3)' }}>M — Moonwalk</span>
+            <span className="kb-key" style={{ color: 'var(--accent-purple)', borderColor: 'rgba(157, 0, 255, 0.3)' }}>H — Dance</span>
           </div>
         </div>
       )}
