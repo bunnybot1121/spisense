@@ -1,5 +1,6 @@
 import React, { useEffect, useCallback, useRef, useState } from 'react';
 import { useStore } from '../../store/useStore';
+import * as THREE from 'three';
 
 // ─── Key Mappings ───
 const KEY_FORWARD = new Set(['w', 'W', 'ArrowUp']);
@@ -36,6 +37,14 @@ export default function GameControls() {
   const isSwinging = useStore((s) => s.isSwinging);
   const [isTouchDevice, setIsTouchDevice] = useState(false);
   const keysRef = useRef(new Set());
+  const webShootTimeoutRef = useRef(null);
+
+  // Clean up timeout on unmount
+  useEffect(() => {
+    return () => {
+      if (webShootTimeoutRef.current) clearTimeout(webShootTimeoutRef.current);
+    };
+  }, []);
 
   // Detect touch device
   useEffect(() => {
@@ -58,11 +67,44 @@ export default function GameControls() {
 
       const store = useStore.getState();
 
-      // Swing toggle
+      // Release from hanging if any key is pressed
+      if (store.playerAction === 'hanging') {
+        if (KEY_SWING.has(e.key)) {
+          e.preventDefault();
+          store.startSwing();
+          return;
+        }
+        if (KEY_FORWARD.has(e.key) || KEY_BACKWARD.has(e.key) || KEY_LEFT.has(e.key) || KEY_RIGHT.has(e.key)) {
+          e.preventDefault();
+          store.setPlayerAction('idle');
+          // Update freePosition with the current characterPosition so physics begins here
+          const charPos = store.characterPosition;
+          if (charPos) {
+            useStore.setState({ freePosition: new THREE.Vector3(charPos[0], charPos[1], charPos[2]) });
+          }
+          return;
+        }
+      }
+
+      // Swing toggle (Space)
       if (KEY_SWING.has(e.key)) {
         e.preventDefault();
-        if (!store.isSwinging) {
+        if (store.isAiming) {
+          if (store.hasTarget && store.targetPoint) {
+            store.startWebZip(store.targetPoint);
+          }
+          store.setAiming(false);
+        } else if (!store.isSwinging) {
           store.startSwing();
+        }
+        return;
+      }
+
+      // Web shoot or Aim mode trigger (E key) - HOLD to aim
+      if (KEY_SHOOT.has(e.key)) {
+        e.preventDefault();
+        if (!store.isSwinging) {
+          store.setAiming(true);
         }
         return;
       }
@@ -70,6 +112,9 @@ export default function GameControls() {
       // Movement
       const action = getActionFromKeys(keysRef.current);
       if (!store.isSwinging && action !== store.playerAction) {
+        if (webShootTimeoutRef.current && store.playerAction === 'webShoot') {
+          return;
+        }
         store.setPlayerAction(action);
       }
     };
@@ -85,26 +130,56 @@ export default function GameControls() {
         return;
       }
 
+      // Web zip on E key release
+      if (KEY_SHOOT.has(e.key)) {
+        if (store.isAiming) {
+          if (store.hasTarget && store.targetPoint) {
+            store.startWebZip(store.targetPoint);
+          }
+          store.setAiming(false);
+        }
+        return;
+      }
+
       // Recalculate action from remaining keys
       if (!store.isSwinging) {
+        if (webShootTimeoutRef.current && store.playerAction === 'webShoot') {
+          return;
+        }
         const action = getActionFromKeys(keysRef.current);
         store.setPlayerAction(action);
       }
     };
 
+    const handlePointerDown = (e) => {
+      // Don't capture when clicking on UI or buttons
+      if (e.target.tagName === 'BUTTON' || e.target.closest('.editor-panel') || e.target.closest('.game-controls-container') || e.target.closest('[class*="leva"]')) return;
+      const store = useStore.getState();
+      if (store.isAiming && !store.isSwinging) {
+        e.preventDefault();
+        if (store.hasTarget && store.targetPoint) {
+          store.startWebZip(store.targetPoint);
+        }
+        store.setAiming(false);
+      }
+    };
+
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keyup', handleKeyUp);
+    window.addEventListener('pointerdown', handlePointerDown);
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keyup', handleKeyUp);
+      window.removeEventListener('pointerdown', handlePointerDown);
     };
-  }, []); // No dependencies — uses getState() for fresh values
+  }, []);
 
   // Clear keys on blur (window loses focus)
   useEffect(() => {
     const onBlur = () => {
       keysRef.current.clear();
       const store = useStore.getState();
+      if (store.isAiming) store.setAiming(false);
       if (!store.isSwinging) store.setPlayerAction('idle');
     };
     window.addEventListener('blur', onBlur);
@@ -114,17 +189,58 @@ export default function GameControls() {
   // ─── Touch Button Handlers ───
   const handleTouchAction = useCallback((action) => {
     const store = useStore.getState();
-    if (!store.isSwinging) store.setPlayerAction(action);
+    if (action === 'webShoot') {
+      if (!store.isSwinging) {
+        if (store.playerAction === 'hanging') {
+          store.setPlayerAction('idle');
+        }
+        store.setAiming(true);
+      }
+    } else {
+      if (store.playerAction === 'hanging') {
+        store.setPlayerAction('idle');
+        const charPos = store.characterPosition;
+        if (charPos) {
+          useStore.setState({ freePosition: new THREE.Vector3(charPos[0], charPos[1], charPos[2]) });
+        }
+      }
+      if (!store.isSwinging) {
+        if (webShootTimeoutRef.current && store.playerAction === 'webShoot') return;
+        store.setPlayerAction(action);
+      }
+    }
   }, []);
 
-  const handleTouchEnd = useCallback(() => {
+  const handleTouchEnd = useCallback((action) => {
     const store = useStore.getState();
-    if (!store.isSwinging) store.setPlayerAction('idle');
+    if (action === 'webShoot') {
+      if (store.isAiming) {
+        if (store.hasTarget && store.targetPoint) {
+          store.startWebZip(store.targetPoint);
+        }
+        store.setAiming(false);
+      }
+      return;
+    } else {
+      if (!store.isSwinging) {
+        if (webShootTimeoutRef.current && store.playerAction === 'webShoot') return;
+        store.setPlayerAction('idle');
+      }
+    }
   }, []);
 
   const handleSwingTouch = useCallback(() => {
     const store = useStore.getState();
-    if (!store.isSwinging) {
+    if (store.playerAction === 'hanging') {
+      store.startSwing();
+      return;
+    }
+    if (store.isAiming) {
+      if (store.hasTarget && store.targetPoint) {
+        store.startWebZip(store.targetPoint);
+      }
+      store.setAiming(false);
+    } else if (!store.isSwinging) {
       store.startSwing();
     } else {
       store.endSwing();
@@ -201,7 +317,7 @@ export default function GameControls() {
             <button
               className="game-swing-btn"
               onTouchStart={(e) => { e.preventDefault(); handleTouchAction('webShoot'); }}
-              onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd(); }}
+              onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd('webShoot'); }}
               style={{
                 width: '60px',
                 height: '60px',

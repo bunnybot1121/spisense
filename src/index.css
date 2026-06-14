@@ -1155,4 +1155,273 @@ canvas { touch-action: none; }
   100% {
     transform: translate3d(-100%, 0, 0);
   }
-}
+}
+
+/* ═══════════════════════════════════════════
+   SCI-FI HUD NAVIGATION COMPASS
+   ═══════════════════════════════════════════ */
+.hud-compass-container {
+  position: absolute;
+  top: 75px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 21;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  pointer-events: none;
+  background: rgba(5, 5, 10, 0.45);
+  backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 8px;
+  padding: 4px 12px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+}
+
+.hud-compass-pointer {
+  width: 0;
+  height: 0;
+  border-left: 6px solid transparent;
+  border-right: 6px solid transparent;
+  border-top: 6px solid var(--accent-cyan);
+  filter: drop-shadow(0 0 4px var(--accent-cyan));
+  z-index: 2;
+  margin-bottom: 2px;
+}
+
+.hud-compass-window {
+  position: relative;
+  width: 360px;
+  height: 32px;
+  overflow: hidden;
+  /* Mask side fades */
+  mask-image: linear-gradient(to right, transparent, #000 20%, #000 80%, transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 20%, #000 80%, transparent);
+}
+
+.hud-compass-tape {
+  position: absolute;
+  left: 0;
+  top: 0;
+  height: 100%;
+  width: 3000px; /* high width to hold all ticks */
+  transform: translateX(0);
+  will-change: transform;
+}
+
+.hud-compass-tick-wrapper {
+  position: absolute;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: 30px;
+  transform: translateX(-50%);
+}
+
+.hud-compass-tick-line {
+  background: rgba(255, 255, 255, 0.25);
+  width: 1px;
+  border-radius: 1px;
+}
+
+.small .hud-compass-tick-line {
+  height: 6px;
+  margin-top: 22px;
+}
+
+.medium .hud-compass-tick-line {
+  height: 10px;
+  margin-top: 18px;
+  background: rgba(255, 255, 255, 0.45);
+}
+
+.large .hud-compass-tick-line {
+  height: 14px;
+  margin-top: 14px;
+  background: var(--accent-cyan);
+  box-shadow: 0 0 4px var(--accent-cyan);
+}
+
+.hud-compass-tick-label {
+  position: absolute;
+  top: -2px;
+  font-family: 'Outfit', sans-serif;
+  font-size: 0.65rem;
+  font-weight: 800;
+  color: rgba(255, 255, 255, 0.5);
+  letter-spacing: 0.05em;
+  text-shadow: 0 1px 3px rgba(0,0,0,0.8);
+}
+
+.large .hud-compass-tick-label {
+  color: var(--accent-cyan);
+  text-shadow: 0 0 6px rgba(0, 243, 255, 0.4);
+}
+
+/* ═══════════════════════════════════════════
+   SCI-FI WEBSHOOTER AIM RETICLE
+   ═══════════════════════════════════════════ */
+.hud-crosshair-container {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(1.3);
+  width: 80px;
+  height: 80px;
+  z-index: 30;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s cubic-bezier(0.19, 1, 0.22, 1), transform 0.3s cubic-bezier(0.19, 1, 0.22, 1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hud-crosshair-container.visible {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1.0);
+}
+
+.hud-crosshair-ring {
+  position: absolute;
+  border-radius: 50%;
+  border: 1px dashed rgba(255, 255, 255, 0.2);
+  transition: border-color 0.2s, box-shadow 0.2s, transform 0.3s;
+}
+
+.hud-crosshair-ring.outer {
+  width: 60px;
+  height: 60px;
+  border-style: double;
+  border-width: 1px;
+  animation: rotateCrosshair 12s linear infinite;
+}
+
+.hud-crosshair-ring.inner {
+  width: 32px;
+  height: 32px;
+  border-style: solid;
+  border-width: 1px;
+  border-color: rgba(255, 255, 255, 0.35);
+  animation: rotateCrosshairCCW 8s linear infinite;
+}
+
+/* Ticks on the crosshair */
+.hud-crosshair-tick {
+  position: absolute;
+  background: rgba(255, 255, 255, 0.5);
+  transition: background-color 0.2s, box-shadow 0.2s;
+}
+
+.hud-crosshair-tick.top, .hud-crosshair-tick.bottom {
+  width: 1px;
+  height: 8px;
+}
+.hud-crosshair-tick.left, .hud-crosshair-tick.right {
+  width: 8px;
+  height: 1px;
+}
+
+.hud-crosshair-tick.top { top: 0; }
+.hud-crosshair-tick.bottom { bottom: 0; }
+.hud-crosshair-tick.left { left: 0; }
+.hud-crosshair-tick.right { right: 0; }
+
+/* Status readout panel below reticle */
+.hud-crosshair-readout {
+  position: absolute;
+  top: 90px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  width: 180px;
+  text-align: center;
+  font-family: 'Outfit', sans-serif;
+  pointer-events: none;
+}
+
+.readout-status {
+  font-size: 0.58rem;
+  font-weight: 800;
+  letter-spacing: 0.15em;
+  color: rgba(255, 255, 255, 0.4);
+  transition: color 0.2s;
+}
+
+.readout-distance {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  color: rgba(255, 255, 255, 0.85);
+  background: rgba(10, 10, 20, 0.65);
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(4px);
+  transition: border-color 0.2s, color 0.2s, text-shadow 0.2s;
+}
+
+/* Locked Target State (Cyan) */
+.hud-crosshair-container.locked .hud-crosshair-ring.outer {
+  border-color: var(--accent-cyan);
+  filter: drop-shadow(0 0 4px var(--accent-cyan));
+  transform: scale(0.9);
+}
+
+.hud-crosshair-container.locked .hud-crosshair-ring.inner {
+  border-color: var(--accent-cyan);
+  box-shadow: inset 0 0 6px rgba(0, 243, 255, 0.3);
+}
+
+.hud-crosshair-container.locked .hud-crosshair-tick {
+  background-color: var(--accent-cyan);
+  box-shadow: 0 0 6px var(--accent-cyan);
+}
+
+.hud-crosshair-container.locked .readout-status {
+  color: var(--accent-cyan);
+  text-shadow: 0 0 6px rgba(0, 243, 255, 0.3);
+}
+
+.hud-crosshair-container.locked .readout-distance {
+  border-color: rgba(0, 243, 255, 0.35);
+  color: var(--accent-cyan);
+  text-shadow: 0 0 8px rgba(0, 243, 255, 0.6);
+  box-shadow: 0 0 10px rgba(0, 243, 255, 0.1);
+}
+
+/* Searching State (Red when out of range or not aiming at buildings) */
+.hud-crosshair-container.searching.visible .hud-crosshair-ring.outer {
+  border-color: var(--accent-red);
+}
+
+.hud-crosshair-container.searching.visible .hud-crosshair-ring.inner {
+  border-color: rgba(255, 0, 85, 0.6);
+}
+
+.hud-crosshair-container.searching.visible .hud-crosshair-tick {
+  background-color: var(--accent-red);
+}
+
+.hud-crosshair-container.searching.visible .readout-status {
+  color: var(--accent-red);
+}
+
+.hud-crosshair-container.searching.visible .readout-distance {
+  border-color: rgba(255, 0, 85, 0.25);
+  color: var(--accent-red);
+}
+
+/* Rotations */
+@keyframes rotateCrosshair {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+@keyframes rotateCrosshairCCW {
+  from { transform: rotate(360deg); }
+  to { transform: rotate(0deg); }
+}
+

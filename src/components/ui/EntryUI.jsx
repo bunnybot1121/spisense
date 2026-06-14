@@ -28,9 +28,9 @@ export default function EntryUI() {
     <div
       style={{
         position: 'absolute',
-        bottom: '50px',
+        bottom: '280px',
         left: '50px',
-        zIndex: 10,
+        zIndex: 10000,
         display: 'flex',
         flexDirection: 'column',
         gap: '20px',

@@ -7,7 +7,7 @@ export const useStore = create((set, get) => ({
   dialogueText: '',
 
   // ─── Player Controls State ───
-  playerAction: 'idle', // 'idle' | 'runForward' | 'runBackward' | 'strafeLeft' | 'strafeRight' | 'swinging'
+  playerAction: 'idle', // 'idle' | 'runForward' | 'runBackward' | 'strafeLeft' | 'strafeRight' | 'swinging' | 'webShoot'
   isSwinging: false,
   swingPhase: null, // null | 'start' | 'loop' | 'end'
   activeKeys: new Set(),
@@ -17,6 +17,25 @@ export const useStore = create((set, get) => ({
   moveSpeed: 0, // current speed (smoothed)
   lateralOffset: 0, // current strafe offset
 
+  // ─── Sci-Fi Aiming & Dynamic Raycast Target State ───
+  isAiming: false,
+  hasTarget: false,
+  targetPoint: null, // THREE.Vector3
+  isDynamicSwinging: false,
+  dynamicSwingTarget: null, // THREE.Vector3
+  dynamicSwingStart: null, // THREE.Vector3
+
+  // ─── Web Zip State ───
+  isWebZipping: false,
+  webZipTarget: null, // THREE.Vector3
+  webZipStart: null, // THREE.Vector3
+  aimTargets: [], // pre-compiled meshes to raycast against
+
+  // ─── Free Movement & Building Collisions State ───
+  freePosition: null, // THREE.Vector3 (free position in city)
+  solidObstacles: [], // array of THREE.Box3 (world bounding boxes of solid buildings)
+  swingLandingPoint: null, // THREE.Vector3 projected landing coordinate
+
   // ─── Setters ───
   setDialogue: (text) => set({ dialogueText: text }),
   setScene: (scene) => set({ currentScene: scene }),
@@ -24,7 +43,31 @@ export const useStore = create((set, get) => ({
 
   setPlayerAction: (action) => set({ playerAction: action }),
 
+  setAiming: (isAiming) => set({ isAiming }),
+  setTarget: (hasTarget, targetPoint) => set({ hasTarget, targetPoint }),
+
+  startWebZip: (targetPoint) => set({
+    isWebZipping: true,
+    webZipTarget: targetPoint,
+    isSwinging: false,
+    swingPhase: null,
+    playerAction: 'webZip',
+  }),
+
+  finishWebZip: () => set({
+    isWebZipping: false,
+    playerAction: 'hanging',
+  }),
+
   startSwing: () => set({
+    isSwinging: true,
+    swingPhase: 'start',
+    playerAction: 'swinging',
+  }),
+
+  startDynamicSwing: (targetPoint) => set({
+    isDynamicSwinging: true,
+    dynamicSwingTarget: targetPoint,
     isSwinging: true,
     swingPhase: 'start',
     playerAction: 'swinging',
@@ -34,11 +77,25 @@ export const useStore = create((set, get) => ({
     swingPhase: 'end',
   }),
 
-  finishSwing: () => set({
-    isSwinging: false,
-    swingPhase: null,
-    playerAction: 'idle',
-  }),
+  finishSwing: () => {
+    const state = get();
+    if (state.isDynamicSwinging) {
+      set({
+        isDynamicSwinging: false,
+        dynamicSwingTarget: null,
+        dynamicSwingStart: null,
+        isSwinging: false,
+        swingPhase: null,
+        playerAction: 'idle',
+      });
+    } else {
+      set({
+        isSwinging: false,
+        swingPhase: null,
+        playerAction: 'idle',
+      });
+    }
+  },
 
   // Key tracking for multi-key support
   pressKey: (key) => {
@@ -53,3 +110,4 @@ export const useStore = create((set, get) => ({
     set({ activeKeys: keys });
   },
 }));
+

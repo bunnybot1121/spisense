@@ -42,6 +42,8 @@ export default function SpiderMan({
   onAnimationsLoaded,
   activeAnimation,
   onActiveAnimationChange,
+  graphicsPreset = 'Balanced',
+  enableShadows = true,
   ...props
 }) {
   const group = useRef();
@@ -50,6 +52,7 @@ export default function SpiderMan({
   const currentScene = useStore((s) => s.currentScene);
   const playerAction = useStore((s) => s.playerAction);
   const isSwinging = useStore((s) => s.isSwinging);
+  const isAiming = useStore((s) => s.isAiming);
   const swingPhase = useStore((s) => s.swingPhase);
   const finishSwing = useStore((s) => s.finishSwing);
 
@@ -67,6 +70,20 @@ export default function SpiderMan({
   const swingYRef = useRef(0); // vertical swing offset
   const swingWebRef = useRef();
   const shootWebRef = useRef();
+  const webZipProgressRef = useRef(0);
+  const webThread1Ref = useRef();
+  const webThread2Ref = useRef();
+  const aimYawRef = useRef(0);
+  const aimPitchRef = useRef(0);
+  const justStartedAiming = useRef(false);
+  const lastTouchRef = useRef({ x: 0, y: 0 });
+
+  // ─── Dynamic Swing and Targeting ───
+  const raycaster = useMemo(() => new THREE.Raycaster(), []);
+  const centerMouse = useMemo(() => new THREE.Vector2(0, 0), []);
+  const dynamicSwingStartRef = useRef(null);
+  const dynamicSwingStartFracRef = useRef(0);
+  const frameCountRef = useRef(0);
 
   // ─── Resolved animation map ───
   const animMap = useMemo(() => {
@@ -116,6 +133,7 @@ export default function SpiderMan({
       if (child.isMesh) {
         child.castShadow = true;
         child.receiveShadow = true;
+        console.log(`[SpiderMan Mesh] Name: ${child.name}, Visible: ${child.visible}, Material: ${child.material ? child.material.name : 'none'}, Material Opacity: ${child.material ? child.material.opacity : 'n/a'}, Material Transparent: ${child.material ? child.material.transparent : 'n/a'}`);
       }
     });
   }, [scene]);
@@ -214,18 +232,32 @@ export default function SpiderMan({
         break;
       }
       case 'strafeLeft': {
-        const anim = animMap.strafeLeft || animMap.run || animMap.walk || animMap.idle;
+        const anim = (currentScene === 'city' && !isAiming)
+          ? animMap.run
+          : (animMap.strafeLeft || animMap.run || animMap.walk || animMap.idle);
         if (anim) playAnimation(anim, { fadeIn: 0.15 });
         break;
       }
       case 'strafeRight': {
-        const anim = animMap.strafeRight || animMap.run || animMap.walk || animMap.idle;
+        const anim = (currentScene === 'city' && !isAiming)
+          ? animMap.run
+          : (animMap.strafeRight || animMap.run || animMap.walk || animMap.idle);
         if (anim) playAnimation(anim, { fadeIn: 0.15 });
         break;
       }
       case 'webShoot': {
         const anim = animMap.webShoot || animMap.idle;
         if (anim) playAnimation(anim, { fadeIn: 0.1, timeScale: 1.5 });
+        break;
+      }
+      case 'webZip': {
+        const anim = animMap.jumpUp || animMap.idle;
+        if (anim) playAnimation(anim, { fadeIn: 0.1, timeScale: 1.2 });
+        break;
+      }
+      case 'hanging': {
+        const anim = actions['hanging'] ? 'hanging' : animMap.idle;
+        if (anim) playAnimation(anim, { fadeIn: 0.15 });
         break;
       }
       case 'moonwalk': {
@@ -245,6 +277,64 @@ export default function SpiderMan({
       }
     }
   }, [editorMode, playerAction, isSwinging, swingPhase, animMap, playAnimation, actions]);
+
+  // ─── Mouse Aiming (Movement Delta) and Pointer Lock Listeners ───
+  useEffect(() => {
+    const handlePointerMove = (e) => {
+      const storeState = useStore.getState();
+      if (storeState.isAiming) {
+        aimYawRef.current -= e.movementX * 0.0025;
+        aimPitchRef.current = Math.max(-0.6, Math.min(0.6, aimPitchRef.current - e.movementY * 0.0025));
+      }
+    };
+
+    const handleTouchStart = (e) => {
+      if (e.touches.length > 0) {
+        lastTouchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      }
+    };
+
+    const handleTouchMove = (e) => {
+      const storeState = useStore.getState();
+      if (storeState.isAiming && e.touches.length > 0) {
+        const dx = e.touches[0].clientX - lastTouchRef.current.x;
+        const dy = e.touches[0].clientY - lastTouchRef.current.y;
+        
+        aimYawRef.current -= dx * 0.005;
+        aimPitchRef.current = Math.max(-0.6, Math.min(0.6, aimPitchRef.current - dy * 0.005));
+
+        lastTouchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      }
+    };
+
+    window.addEventListener('pointermove', handlePointerMove);
+    window.addEventListener('touchstart', handleTouchStart);
+    window.addEventListener('touchmove', handleTouchMove, { passive: true });
+    
+    // Subscribe to aiming state to request PointerLock
+    const unsub = useStore.subscribe(
+      (state) => state.isAiming,
+      (isAiming) => {
+        const canvas = document.querySelector('canvas');
+        if (isAiming) {
+          if (canvas && canvas.requestPointerLock) {
+            canvas.requestPointerLock().catch(() => {});
+          }
+        } else {
+          if (document.exitPointerLock && document.pointerLockElement === canvas) {
+            document.exitPointerLock();
+          }
+        }
+      }
+    );
+
+    return () => {
+      window.removeEventListener('pointermove', handlePointerMove);
+      window.removeEventListener('touchstart', handleTouchStart);
+      window.removeEventListener('touchmove', handleTouchMove);
+      unsub();
+    };
+  }, []);
 
   // ─── Handle swing end → finish after animation plays ───
   useEffect(() => {
@@ -331,111 +421,479 @@ export default function SpiderMan({
   const _matrix = useMemo(() => new THREE.Matrix4(), []);
 
   useFrame((state, delta) => {
+    frameCountRef.current++;
     if (!group.current) return;
 
     // ─── Editor Mode ───
     if (editorMode) {
       group.current.position.set(0, 0, 0);
-      group.current.scale.setScalar(spiderCtrl?.scale ?? 1);
+      group.current.scale.setScalar(spiderCtrl?.scale ?? 100);
       const rotYDeg = spiderCtrl?.rotation_y ?? 0;
       group.current.rotation.y = THREE.MathUtils.degToRad(rotYDeg);
       return;
     }
 
-    // ─── Play Mode: Player-driven movement ───
-    if (!pathCurve) return;
-
-    const dt = Math.min(delta, 0.05); // cap delta to prevent jumps
-    const scale = spiderCtrl?.scale ?? 1;
-
-    // Read store state directly each frame for real-time responsiveness
+    // Read store states
     const storeState = useStore.getState();
+    const currentScene = storeState.currentScene;
     const currentAction = storeState.playerAction;
     const currentlySwinging = storeState.isSwinging;
+    const currentlyZipping = storeState.isWebZipping;
+    const isAiming = storeState.isAiming;
+    const isDynamic = storeState.isDynamicSwinging;
 
-    // ── Determine target speed based on action ──
-    let targetSpeed = 0;
-    let targetLateral = lateralOffsetRef.current;
+    const dt = Math.min(delta, 0.05); // cap delta to prevent jumps
+    const scale = spiderCtrl?.scale ?? 100;
 
-    if (currentlySwinging) {
-      targetSpeed = SWING_SPEED;
-    } else {
-      switch (currentAction) {
-        case 'runForward':
-          targetSpeed = MOVE_SPEED;
-          break;
-        case 'runBackward':
-          targetSpeed = -MOVE_SPEED * 0.6; // slower backward
-          break;
-        case 'strafeLeft':
-          targetLateral = Math.max(lateralOffsetRef.current - STRAFE_SPEED * dt, -MAX_STRAFE);
-          break;
-        case 'strafeRight':
-          targetLateral = Math.min(lateralOffsetRef.current + STRAFE_SPEED * dt, MAX_STRAFE);
-          break;
-        default:
-          targetSpeed = 0;
-          break;
+    // ─── 1. Sci-Fi Aiming & Raycasting Target Check (Throttled & Optimized) ───
+    if (isAiming && !currentlySwinging && !currentlyZipping) {
+      let shouldRaycast = true;
+      if (graphicsPreset === 'Performance') {
+        shouldRaycast = (frameCountRef.current % 3 === 0);
+      } else if (graphicsPreset === 'Balanced') {
+        shouldRaycast = (frameCountRef.current % 2 === 0);
+      }
+
+      if (shouldRaycast) {
+        raycaster.setFromCamera(centerMouse, state.camera);
+        const targets = storeState.aimTargets;
+
+        if (targets && targets.length > 0) {
+          const intersects = raycaster.intersectObjects(targets, false);
+          // Find first intersection that is high enough (y > 3.5 for city, y > 0.5 for alley) and within range (dist < 60)
+          const minHeight = currentScene === 'city' ? 3.5 : 0.5;
+          const validHit = intersects.find((hit) => {
+            const dist = state.camera.position.distanceTo(hit.point);
+            return hit.point.y > minHeight && dist < 60;
+          });
+
+          if (validHit) {
+            useStore.setState({ hasTarget: true, targetPoint: validHit.point });
+          } else {
+            useStore.setState({ hasTarget: false, targetPoint: null });
+          }
+        } else {
+          useStore.setState({ hasTarget: false, targetPoint: null });
+        }
+      }
+    } else if (!isAiming && !currentlySwinging && !currentlyZipping) {
+      if (storeState.hasTarget) {
+        useStore.setState({ hasTarget: false, targetPoint: null });
       }
     }
 
-    // ── Smooth speed ramping ──
-    if (Math.abs(targetSpeed) > Math.abs(speedRef.current)) {
-      speedRef.current = THREE.MathUtils.lerp(speedRef.current, targetSpeed, ACCELERATION * dt);
+    // ─── 2. Calculate coordinates (Dynamic Swing vs Free Roaming vs Path Snapping) ───
+    let finalX = 0;
+    let finalY = 0;
+    let finalZ = 0;
+
+    // Get character facing direction for local camera orientation
+    const charForward = new THREE.Vector3(0, 0, 1).applyQuaternion(group.current.quaternion).normalize();
+    const charRight = new THREE.Vector3(1, 0, 0).applyQuaternion(group.current.quaternion).normalize();
+
+    if (currentlyZipping && storeState.webZipTarget) {
+      // Initialize zip start position
+      if (!dynamicSwingStartRef.current) {
+        dynamicSwingStartRef.current = group.current.position.clone();
+        useStore.setState({ webZipStart: dynamicSwingStartRef.current });
+        webZipProgressRef.current = 0;
+      }
+
+      // Progress zip physics interpolation
+      webZipProgressRef.current = Math.min(webZipProgressRef.current + dt * 2.8, 1);
+      const t = webZipProgressRef.current;
+      const startPos = dynamicSwingStartRef.current;
+
+      finalX = THREE.MathUtils.lerp(startPos.x, storeState.webZipTarget.x, t);
+      finalY = THREE.MathUtils.lerp(startPos.y, storeState.webZipTarget.y, t);
+      finalZ = THREE.MathUtils.lerp(startPos.z, storeState.webZipTarget.z, t);
+
+      // Orient Spider-Man facing the zip target horizontally
+      const dirToTarget = storeState.webZipTarget.clone().sub(startPos);
+      dirToTarget.y = 0;
+      if (dirToTarget.lengthSq() > 0.001) {
+        const targetAngle = Math.atan2(dirToTarget.x, dirToTarget.z);
+        _targetQuat.setFromAxisAngle(_up, targetAngle);
+        group.current.quaternion.slerp(_targetQuat, 15 * dt);
+      }
+
+      // Complete zip and land
+      if (t >= 1) {
+        dynamicSwingStartRef.current = null;
+        webZipProgressRef.current = 0;
+
+        // Offset 0.45m away from the wall to prevent clipping
+        const offsetDir = new THREE.Vector3().subVectors(startPos, storeState.webZipTarget).normalize();
+        const finalHangingPos = storeState.webZipTarget.clone().addScaledVector(offsetDir, 0.45);
+        useStore.setState({ freePosition: finalHangingPos });
+
+        // Update path fraction & lateral offset in Alley scene so we release/drop down locally
+        if (currentScene !== 'city' && pathCurve) {
+          let minDistance = Infinity;
+          let closestFraction = 0;
+          const samples = 100;
+          const tempVector = new THREE.Vector3();
+          
+          for (let i = 0; i <= samples; i++) {
+            const sampleT = i / samples;
+            pathCurve.getPointAt(sampleT, tempVector);
+            const dist = tempVector.distanceTo(finalHangingPos);
+            if (dist < minDistance) {
+              minDistance = dist;
+              closestFraction = sampleT;
+            }
+          }
+          fractionRef.current = closestFraction;
+          
+          // Set lateralOffsetRef to project from the new path segment coordinates
+          pathCurve.getPointAt(closestFraction, tempVector);
+          pathCurve.getTangentAt(closestFraction, _tangent);
+          _lateral.crossVectors(_tangent, _up).normalize();
+          
+          const diff = new THREE.Vector3().subVectors(finalHangingPos, tempVector);
+          lateralOffsetRef.current = diff.dot(_lateral);
+        }
+
+        storeState.finishWebZip();
+      }
+    } else if (currentAction === 'hanging') {
+      // Lock position at the wall clinging coordinates
+      if (storeState.freePosition) {
+        finalX = storeState.freePosition.x;
+        finalY = storeState.freePosition.y;
+        finalZ = storeState.freePosition.z;
+      } else {
+        const charPos = storeState.characterPosition;
+        finalX = charPos[0];
+        finalY = charPos[1];
+        finalZ = charPos[2];
+      }
+
+      // Face the wall
+      if (storeState.webZipTarget && storeState.freePosition) {
+        const dirToWall = storeState.webZipTarget.clone().sub(storeState.freePosition);
+        dirToWall.y = 0;
+        if (dirToWall.lengthSq() > 0.001) {
+          const targetAngle = Math.atan2(dirToWall.x, dirToWall.z);
+          _targetQuat.setFromAxisAngle(_up, targetAngle);
+          group.current.quaternion.copy(_targetQuat); // snap facing the wall
+        }
+      }
+    } else if (isDynamic && storeState.dynamicSwingTarget) {
+      // Dynamic Aimed Swing logic
+      if (!dynamicSwingStartRef.current) {
+        dynamicSwingStartRef.current = group.current.position.clone();
+        dynamicSwingStartFracRef.current = fractionRef.current;
+        useStore.setState({ dynamicSwingStart: dynamicSwingStartRef.current });
+      }
+
+      // Progress swing
+      swingProgressRef.current = Math.min(swingProgressRef.current + dt * 1.15, 1);
+      const t = swingProgressRef.current;
+
+      const startPos = dynamicSwingStartRef.current;
+
+      if (currentScene === 'city') {
+        // In free roaming mode, swing towards the target horizontally and land under it
+        const targetLand = storeState.dynamicSwingTarget.clone();
+        targetLand.y = 0; // land on ground
+        
+        finalX = THREE.MathUtils.lerp(startPos.x, targetLand.x, t);
+        finalZ = THREE.MathUtils.lerp(startPos.z, targetLand.z, t);
+        
+        const liftAmount = Math.max(5.0, (storeState.dynamicSwingTarget.y) * 0.5);
+        const swingY = Math.sin(t * Math.PI) * liftAmount;
+        finalY = THREE.MathUtils.lerp(startPos.y, 0, t) + swingY;
+
+        // Orient facing forward towards target
+        const dirToTarget = targetLand.clone().sub(startPos);
+        dirToTarget.y = 0;
+        if (dirToTarget.lengthSq() > 0.001) {
+          const targetAngle = Math.atan2(dirToTarget.x, dirToTarget.z);
+          _targetQuat.setFromAxisAngle(_up, targetAngle);
+          group.current.quaternion.slerp(_targetQuat, 12 * dt);
+        }
+
+        // End dynamic swing -> update freePosition directly to landing spot
+        if (t >= 1) {
+          finishSwing();
+          dynamicSwingStartRef.current = null;
+          useStore.setState({ freePosition: new THREE.Vector3(finalX, 0, finalZ) });
+        }
+      } else {
+        // Path mode dynamic swing (alley training phase)
+        if (!pathCurve) return;
+        const startFrac = dynamicSwingStartFracRef.current;
+        const targetFrac = Math.min(1.0, startFrac + 0.16);
+        fractionRef.current = THREE.MathUtils.lerp(startFrac, targetFrac, t);
+        pathCurve.getPointAt(fractionRef.current, _posOnCurve);
+        pathCurve.getTangentAt(fractionRef.current, _tangent);
+
+        finalX = THREE.MathUtils.lerp(startPos.x, _posOnCurve.x, t);
+        finalZ = THREE.MathUtils.lerp(startPos.z, _posOnCurve.z, t);
+
+        const liftAmount = Math.max(4.5, (storeState.dynamicSwingTarget.y - _posOnCurve.y) * 0.45);
+        const swingY = Math.sin(t * Math.PI) * liftAmount;
+        finalY = THREE.MathUtils.lerp(startPos.y, _posOnCurve.y, t) + swingY;
+
+        const lateralToBuilding = storeState.dynamicSwingTarget.clone().sub(_posOnCurve);
+        lateralToBuilding.y = 0;
+        const buildingPull = lateralToBuilding.multiplyScalar(Math.sin(t * Math.PI) * 0.22);
+        finalX += buildingPull.x;
+        finalZ += buildingPull.z;
+
+        if (t >= 1) {
+          finishSwing();
+          dynamicSwingStartRef.current = null;
+        }
+      }
+    } else if (currentScene === 'city') {
+      // ─── Free Roaming Street Movement inside City Scene ───
+      dynamicSwingStartRef.current = null;
+
+      // 1. Initialize freePosition if null
+      if (!storeState.freePosition) {
+        const startPos = new THREE.Vector3(spiderManPos.x, spiderManPos.y, spiderManPos.z);
+        useStore.setState({ freePosition: startPos });
+        storeState.freePosition = startPos;
+      }
+
+      // 2. Get camera direction projected horizontally
+      const camDir = new THREE.Vector3();
+      state.camera.getWorldDirection(camDir);
+      camDir.y = 0;
+      camDir.normalize();
+
+      const camRight = new THREE.Vector3();
+      camRight.crossVectors(camDir, _up).normalize();
+
+      // 3. Compute movement speed & direction
+      let moveSpeedVal = 10.5; // standard speed (faster, less constrained)
+      if (currentlySwinging) {
+        moveSpeedVal = 18.0; // faster while swinging
+      } else if (currentAction === 'runBackward') {
+        moveSpeedVal = 5.5; // slower backward
+      }
+
+      const moveVec = new THREE.Vector3(0, 0, 0);
+      if (currentAction === 'runForward' || currentlySwinging) {
+        moveVec.add(camDir);
+      } else if (currentAction === 'runBackward') {
+        moveVec.add(camDir.clone().negate());
+      } else if (currentAction === 'strafeLeft') {
+        moveVec.add(camRight.clone().negate());
+      } else if (currentAction === 'strafeRight') {
+        moveVec.add(camRight);
+      }
+
+      if (moveVec.lengthSq() > 0.001) {
+        moveVec.normalize().multiplyScalar(moveSpeedVal * dt);
+        // Smoothly rotate Spider-Man to face movement direction
+        const targetAngle = Math.atan2(moveVec.x, moveVec.z);
+        _targetQuat.setFromAxisAngle(_up, targetAngle);
+        group.current.quaternion.slerp(_targetQuat, 12 * dt);
+      }
+
+      // 4. Bounding box sliding collision check (solid buildings)
+      const currentPos = storeState.freePosition.clone();
+      const targetPos = currentPos.clone().add(moveVec);
+
+      const testPosX = new THREE.Vector3(targetPos.x, currentPos.y, currentPos.z);
+      const testPosZ = new THREE.Vector3(currentPos.x, currentPos.y, targetPos.z);
+
+      let collidesX = false;
+      let collidesZ = false;
+
+      const obstacles = storeState.solidObstacles || [];
+      const playerRadius = 0.22; // smaller collision buffer for fluid sliding around corners
+
+      for (let i = 0; i < obstacles.length; i++) {
+        const box = obstacles[i];
+        // Only test bounding boxes within proximity range (5m) to ensure 60fps
+        const dist = box.distanceToPoint(currentPos);
+        if (dist < 5.0) {
+          const paddedBox = box.clone().expandByScalar(playerRadius);
+          if (!collidesX && paddedBox.containsPoint(testPosX)) {
+            collidesX = true;
+          }
+          if (!collidesZ && paddedBox.containsPoint(testPosZ)) {
+            collidesZ = true;
+          }
+          if (collidesX && collidesZ) break;
+        }
+      }
+
+      if (!collidesX) currentPos.x = targetPos.x;
+      if (!collidesZ) currentPos.z = targetPos.z;
+
+      // Clamp absolute world boundaries (larger region to allow freedom of exploration)
+      currentPos.x = THREE.MathUtils.clamp(currentPos.x, -120, 120);
+      currentPos.z = THREE.MathUtils.clamp(currentPos.z, -120, 120);
+
+      // 5. Vertical swing leap calculations
+      if (currentlySwinging) {
+        swingProgressRef.current = Math.min(swingProgressRef.current + dt * 1.5, 1);
+        const swingY = Math.sin(swingProgressRef.current * Math.PI) * 4.0;
+        currentPos.y = swingY;
+      } else {
+        swingProgressRef.current = 0;
+        currentPos.y = THREE.MathUtils.lerp(currentPos.y, 0, 5.0 * dt);
+      }
+
+      // 6. Save back to store & set coordinates
+      useStore.setState({ freePosition: currentPos });
+
+      finalX = currentPos.x;
+      finalY = currentPos.y;
+      finalZ = currentPos.z;
+
+      // Fake speed value for running animations
+      speedRef.current = moveVec.lengthSq() > 0.0001 ? MOVE_SPEED : 0;
     } else {
-      speedRef.current = THREE.MathUtils.lerp(speedRef.current, targetSpeed, DECELERATION * dt);
+      // ─── Snapped Path Mode (Alley scene training & editor preview) ───
+      dynamicSwingStartRef.current = null;
+
+      if (!pathCurve) return;
+
+      let targetSpeed = 0;
+      let targetLateral = lateralOffsetRef.current;
+
+      if (currentlySwinging) {
+        targetSpeed = SWING_SPEED;
+      } else {
+        switch (currentAction) {
+          case 'runForward':
+            targetSpeed = MOVE_SPEED;
+            break;
+          case 'runBackward':
+            targetSpeed = -MOVE_SPEED * 0.6;
+            break;
+          case 'strafeLeft':
+            targetLateral = Math.max(lateralOffsetRef.current - STRAFE_SPEED * dt, -MAX_STRAFE);
+            break;
+          case 'strafeRight':
+            targetLateral = Math.min(lateralOffsetRef.current + STRAFE_SPEED * dt, MAX_STRAFE);
+            break;
+          default:
+            targetSpeed = 0;
+            break;
+        }
+      }
+
+      // Smooth speed ramping
+      if (Math.abs(targetSpeed) > Math.abs(speedRef.current)) {
+        speedRef.current = THREE.MathUtils.lerp(speedRef.current, targetSpeed, ACCELERATION * dt);
+      } else {
+        speedRef.current = THREE.MathUtils.lerp(speedRef.current, targetSpeed, DECELERATION * dt);
+      }
+
+      if (Math.abs(speedRef.current) < 0.001) speedRef.current = 0;
+
+      // Update path position fraction
+      fractionRef.current += speedRef.current * dt;
+      fractionRef.current = THREE.MathUtils.clamp(fractionRef.current, 0, 1);
+
+      // Return to center when not strafing
+      if (currentAction !== 'strafeLeft' && currentAction !== 'strafeRight') {
+        targetLateral = THREE.MathUtils.lerp(lateralOffsetRef.current, 0, 2.0 * dt);
+      }
+      lateralOffsetRef.current = targetLateral;
+
+      // Compute standard positions
+      pathCurve.getPointAt(fractionRef.current, _posOnCurve);
+      pathCurve.getTangentAt(fractionRef.current, _tangent);
+      _lateral.crossVectors(_tangent, _up).normalize();
+
+      finalX = _posOnCurve.x + _lateral.x * lateralOffsetRef.current;
+      finalZ = _posOnCurve.z + _lateral.z * lateralOffsetRef.current;
+      finalY = _posOnCurve.y;
+
+      // Normal vertical swing arc
+      if (currentlySwinging) {
+        swingProgressRef.current = Math.min(swingProgressRef.current + dt * 1.5, 1);
+        const arcT = swingProgressRef.current;
+        swingYRef.current = SWING_LIFT * Math.sin(arcT * Math.PI);
+        finalY += swingYRef.current;
+      } else {
+        swingProgressRef.current = 0;
+        swingYRef.current = THREE.MathUtils.lerp(swingYRef.current, 0, 5.0 * dt);
+        finalY += swingYRef.current;
+      }
     }
 
-    // Kill tiny residual speeds
-    if (Math.abs(speedRef.current) < 0.001) speedRef.current = 0;
-
-    // ── Update path fraction ──
-    fractionRef.current += speedRef.current * dt;
-    fractionRef.current = THREE.MathUtils.clamp(fractionRef.current, 0, 1);
-
-    // ── Update lateral offset (return to center when not strafing) ──
-    if (currentAction !== 'strafeLeft' && currentAction !== 'strafeRight') {
-      targetLateral = THREE.MathUtils.lerp(lateralOffsetRef.current, 0, 2.0 * dt);
-    }
-    lateralOffsetRef.current = targetLateral;
-
-    // ── Compute position on curve ──
-    pathCurve.getPointAt(fractionRef.current, _posOnCurve);
-    pathCurve.getTangentAt(fractionRef.current, _tangent);
-
-    // Lateral direction = tangent × up (perpendicular)
-    _lateral.crossVectors(_tangent, _up).normalize();
-
-    // Apply lateral offset
-    const finalX = _posOnCurve.x + _lateral.x * lateralOffsetRef.current;
-    const finalZ = _posOnCurve.z + _lateral.z * lateralOffsetRef.current;
-    let finalY = _posOnCurve.y;
-
-    // ── Swing vertical arc ──
+    // Calculate projected swing landing point
+    let landingPoint = null;
     if (currentlySwinging) {
-      swingProgressRef.current = Math.min(swingProgressRef.current + dt * 1.5, 1);
-      // Parabolic arc
-      const arcT = swingProgressRef.current;
-      swingYRef.current = SWING_LIFT * Math.sin(arcT * Math.PI);
-      finalY += swingYRef.current;
-    } else {
-      swingProgressRef.current = 0;
-      swingYRef.current = THREE.MathUtils.lerp(swingYRef.current, 0, 5.0 * dt);
-      finalY += swingYRef.current;
-    }
+      if (isDynamic && storeState.dynamicSwingTarget) {
+        if (currentScene === 'city') {
+          landingPoint = storeState.dynamicSwingTarget.clone();
+          landingPoint.y = 0;
+        } else {
+          // Alley scene dynamic swing
+          if (pathCurve) {
+            const startFrac = dynamicSwingStartFracRef.current;
+            const targetFrac = Math.min(1.0, startFrac + 0.16);
+            landingPoint = new THREE.Vector3();
+            pathCurve.getPointAt(targetFrac, landingPoint);
+            
+            const tempTangent = new THREE.Vector3();
+            pathCurve.getTangentAt(targetFrac, tempTangent);
+            const tempLateral = new THREE.Vector3().crossVectors(tempTangent, _up).normalize();
+            landingPoint.addScaledVector(tempLateral, lateralOffsetRef.current);
+          }
+        }
+      } else {
+        // Regular Swing
+        if (currentScene === 'city') {
+          const camDir = new THREE.Vector3();
+          state.camera.getWorldDirection(camDir);
+          camDir.y = 0;
+          camDir.normalize();
 
-    // ── Set position ──
+          const moveSpeedVal = 18.0;
+          const horizVel = camDir.clone().multiplyScalar(moveSpeedVal);
+          const remainingTime = (1.0 - swingProgressRef.current) / 1.5;
+
+          const currentPos = storeState.freePosition ? storeState.freePosition.clone() : new THREE.Vector3(finalX, 0, finalZ);
+          
+          landingPoint = new THREE.Vector3(
+            currentPos.x + horizVel.x * remainingTime,
+            0,
+            currentPos.z + horizVel.z * remainingTime
+          );
+        } else {
+          // Alley scene regular swing
+          if (pathCurve) {
+            const remainingTime = (1.0 - swingProgressRef.current) / 1.5;
+            const landingFrac = Math.min(1.0, fractionRef.current + SWING_SPEED * remainingTime);
+            landingPoint = new THREE.Vector3();
+            pathCurve.getPointAt(landingFrac, landingPoint);
+            
+            const tempTangent = new THREE.Vector3();
+            pathCurve.getTangentAt(landingFrac, tempTangent);
+            const tempLateral = new THREE.Vector3().crossVectors(tempTangent, _up).normalize();
+            landingPoint.addScaledVector(tempLateral, lateralOffsetRef.current);
+          }
+        }
+      }
+    }
+    useStore.setState({ swingLandingPoint: landingPoint });
+
+    // Set player position and scale
     group.current.position.set(finalX, finalY, finalZ);
     group.current.scale.setScalar(scale);
 
-    // ── Smooth rotation (slerp instead of lookAt snapping) ──
-    if (Math.abs(speedRef.current) > 0.01) {
-      const lookDir = speedRef.current > 0 ? _tangent : _tangent.clone().negate();
+    // Sync position back to store for HUD compass distance calculations
+    useStore.setState({ characterPosition: [finalX, finalY, finalZ] });
+
+    // ─── 3. Smooth Rotation (Alley Snapped Path mode) ───
+    if (currentScene !== 'city' && (Math.abs(speedRef.current) > 0.01 || isDynamic)) {
+      const lookDir = speedRef.current >= 0 ? _tangent : _tangent.clone().negate();
       _lookTarget.copy(group.current.position).add(lookDir);
       _matrix.lookAt(group.current.position, _lookTarget, _up);
       _targetQuat.setFromRotationMatrix(_matrix);
 
-      // Apply additional rotation from controls
+      // Apply extra rotation from controls
       const rotYDeg = spiderCtrl?.rotation_y ?? 0;
       const additionalRot = new THREE.Quaternion().setFromAxisAngle(_up, THREE.MathUtils.degToRad(rotYDeg));
       _targetQuat.multiply(additionalRot);
@@ -443,24 +901,72 @@ export default function SpiderMan({
       group.current.quaternion.slerp(_targetQuat, ROTATION_SMOOTHING * dt);
     }
 
-    // ── Camera follow ──
+    // ─── 4. Camera follow: Normal vs Over-The-Shoulder (OTS) Aiming ───
     group.current.getWorldPosition(_worldPos);
-    const camOffX = cameraCtrl?.camera_offset_x ?? 0;
-    const camOffY = cameraCtrl?.camera_offset_y ?? 2;
-    const camOffZ = cameraCtrl?.camera_offset_z ?? 5;
-    const lerp = cameraCtrl?.camera_lerp ?? 0.08;
 
-    _camTarget.set(
-      _worldPos.x + camOffX,
-      _worldPos.y + camOffY + swingYRef.current * 0.5,
-      _worldPos.z + camOffZ
-    );
-    state.camera.position.lerp(_camTarget, lerp);
+    if (isAiming && !currentlySwinging) {
+      if (!justStartedAiming.current) {
+        // Initialize yaw from Spiderman's current rotation
+        const euler = new THREE.Euler().setFromQuaternion(group.current.quaternion, 'YXZ');
+        aimYawRef.current = euler.y;
+        aimPitchRef.current = 0;
+        justStartedAiming.current = true;
+      }
 
-    _lookTarget.set(_worldPos.x, _worldPos.y + 1, _worldPos.z);
-    state.camera.lookAt(_lookTarget);
+      // Rotate Spiderman to face the look direction
+      _targetQuat.setFromAxisAngle(_up, aimYawRef.current);
+      group.current.quaternion.slerp(_targetQuat, 10 * dt);
 
-    // ── Directional Light Follow (Shadows) ──
+      // Rotate vectors by aimYawRef.current
+      const rotatedBack = new THREE.Vector3(0, 0, -1).applyAxisAngle(_up, aimYawRef.current).negate();
+      const rotatedRight = new THREE.Vector3(1, 0, 0).applyAxisAngle(_up, aimYawRef.current);
+
+      // Compute OTS offset (shoulder view)
+      const cameraOffset = new THREE.Vector3()
+        .addScaledVector(rotatedBack, 2.2)
+        .addScaledVector(rotatedRight, 0.7)
+        .addScaledVector(_up, 1.6);
+
+      _camTarget.copy(group.current.position).add(cameraOffset);
+      state.camera.position.lerp(_camTarget, 0.15);
+
+      // Look target is in front of camera along the forward vector with vertical pitch
+      const rotatedForward = new THREE.Vector3(0, 0, -1).applyAxisAngle(_up, aimYawRef.current).negate();
+      rotatedForward.y += Math.sin(aimPitchRef.current);
+      _lookTarget.copy(state.camera.position).add(rotatedForward.multiplyScalar(10));
+      state.camera.lookAt(_lookTarget);
+    } else {
+      justStartedAiming.current = false;
+
+      // Normal follow camera
+      const camOffX = cameraCtrl?.camera_offset_x ?? 0;
+      const camOffY = cameraCtrl?.camera_offset_y ?? 2;
+      const camOffZ = cameraCtrl?.camera_offset_z ?? 5;
+      const lerp = cameraCtrl?.camera_lerp ?? 0.08;
+
+      const dynamicSwingHeight = isDynamic ? (finalY - _posOnCurve.y) : (currentScene === 'city' ? finalY : swingYRef.current);
+
+      _camTarget.set(
+        _worldPos.x + camOffX,
+        _worldPos.y + camOffY + dynamicSwingHeight * 0.5,
+        _worldPos.z + camOffZ
+      );
+      state.camera.position.lerp(_camTarget, lerp);
+
+      _lookTarget.set(_worldPos.x, _worldPos.y + 1, _worldPos.z);
+      state.camera.lookAt(_lookTarget);
+    }
+
+    // ─── 5. Dynamic Camera FOV Aiming Zoom ───
+    const defaultFov = cameraCtrl?.camera_fov ?? 50;
+    const aimFov = cameraCtrl?.camera_aim_fov ?? 38;
+    const targetFov = isAiming ? aimFov : defaultFov;
+    if (Math.abs(state.camera.fov - targetFov) > 0.1) {
+      state.camera.fov = THREE.MathUtils.lerp(state.camera.fov, targetFov, 10 * dt);
+      state.camera.updateProjectionMatrix();
+    }
+
+    // ─── 5. Shadow Directional Light Tracking ───
     const dirLight = state.scene.getObjectByName('mainDirLight');
     if (dirLight) {
       const dirX = lightCtrl?.directional_x ?? 5;
@@ -479,26 +985,121 @@ export default function SpiderMan({
       dirLight.target.updateMatrixWorld();
     }
 
-    // ─── Web Line Coordinates Update ───
+    // ─── 6. Web Line Rendering Coordinates Update ───
     const isShooting = storeState.playerAction === 'webShoot';
+    const isZipping = storeState.isWebZipping;
 
     if (currentlySwinging && swingWebRef.current) {
       const start = group.current.position.clone().add(new THREE.Vector3(0, 0.8, 0));
-      const anchor = new THREE.Vector3(start.x, start.y + 12 - swingYRef.current * 0.4, start.z - 3);
+      let anchor;
+      if (isDynamic && storeState.dynamicSwingTarget) {
+        anchor = storeState.dynamicSwingTarget;
+      } else {
+        // In free movement mode, anchor goes up and forward relative to facing direction
+        if (currentScene === 'city') {
+          anchor = start.clone().add(charForward.clone().multiplyScalar(4)).add(new THREE.Vector3(0, 10, 0));
+        } else {
+          anchor = new THREE.Vector3(start.x, start.y + 12 - swingYRef.current * 0.4, start.z - 3);
+        }
+      }
       swingWebRef.current.geometry.setFromPoints([start, anchor]);
+      if (swingWebRef.current.geometry.attributes.position) {
+        swingWebRef.current.geometry.attributes.position.needsUpdate = true;
+      }
+      swingWebRef.current.geometry.computeBoundingSphere();
+      swingWebRef.current.geometry.computeBoundingBox();
       swingWebRef.current.visible = true;
     } else if (swingWebRef.current) {
       swingWebRef.current.visible = false;
     }
 
-    if (isShooting && shootWebRef.current) {
+    if (isZipping && storeState.webZipTarget) {
+      const start = group.current.position.clone().add(new THREE.Vector3(0, 0.8, 0));
+      const target = storeState.webZipTarget;
+
+      // Main web line
+      shootWebRef.current.geometry.setFromPoints([start, target]);
+      if (shootWebRef.current.geometry.attributes.position) {
+        shootWebRef.current.geometry.attributes.position.needsUpdate = true;
+      }
+      shootWebRef.current.geometry.computeBoundingSphere();
+      shootWebRef.current.visible = true;
+
+      // Auxiliary webbing threads (little webs spreading out)
+      const zipDir = target.clone().sub(start).normalize();
+      const rightVec = new THREE.Vector3().crossVectors(zipDir, _up).normalize();
+      const anchor1 = target.clone().addScaledVector(rightVec, 1.2).addScaledVector(_up, 0.8);
+      const anchor2 = target.clone().addScaledVector(rightVec, -1.2).addScaledVector(_up, 0.8);
+
+      if (webThread1Ref.current) {
+        webThread1Ref.current.geometry.setFromPoints([start, anchor1]);
+        if (webThread1Ref.current.geometry.attributes.position) {
+          webThread1Ref.current.geometry.attributes.position.needsUpdate = true;
+        }
+        webThread1Ref.current.geometry.computeBoundingSphere();
+        webThread1Ref.current.visible = true;
+      }
+
+      if (webThread2Ref.current) {
+        webThread2Ref.current.geometry.setFromPoints([start, anchor2]);
+        if (webThread2Ref.current.geometry.attributes.position) {
+          webThread2Ref.current.geometry.attributes.position.needsUpdate = true;
+        }
+        webThread2Ref.current.geometry.computeBoundingSphere();
+        webThread2Ref.current.visible = true;
+      }
+    } else if (isShooting && shootWebRef.current) {
       const start = group.current.position.clone().add(new THREE.Vector3(0, 0.8, 0));
       const forward = new THREE.Vector3(0, 0, 1).applyQuaternion(group.current.quaternion).normalize();
-      const end = start.clone().add(forward.multiplyScalar(20));
+      
+      let end = start.clone().add(forward.clone().multiplyScalar(20));
+      
+      // Raycast in Alley scene to stick to walls
+      const alleyGroup = state.scene.getObjectByName('alley-group');
+      if (alleyGroup) {
+        const leftDir = new THREE.Vector3().crossVectors(forward, _up).normalize();
+        const rightDir = leftDir.clone().negate();
+        const directions = [
+          forward,
+          leftDir,
+          rightDir,
+          forward.clone().add(leftDir).normalize(),
+          forward.clone().add(rightDir).normalize()
+        ];
+        
+        let closestHit = null;
+        let minDistance = Infinity;
+        
+        for (const dir of directions) {
+          raycaster.set(start, dir);
+          const intersects = raycaster.intersectObjects(alleyGroup.children, true);
+          if (intersects.length > 0) {
+            const hit = intersects.find(h => h.distance < 30);
+            if (hit && hit.distance < minDistance) {
+              minDistance = hit.distance;
+              closestHit = hit;
+            }
+          }
+        }
+        if (closestHit) {
+          end = closestHit.point;
+        }
+      }
+      
       shootWebRef.current.geometry.setFromPoints([start, end]);
+      if (shootWebRef.current.geometry.attributes.position) {
+        shootWebRef.current.geometry.attributes.position.needsUpdate = true;
+      }
+      shootWebRef.current.geometry.computeBoundingSphere();
+      shootWebRef.current.geometry.computeBoundingBox();
       shootWebRef.current.visible = true;
-    } else if (shootWebRef.current) {
-      shootWebRef.current.visible = false;
+
+      if (webThread1Ref.current) webThread1Ref.current.visible = false;
+      if (webThread2Ref.current) webThread2Ref.current.visible = false;
+    } else {
+      if (shootWebRef.current) shootWebRef.current.visible = false;
+      if (webThread1Ref.current) webThread1Ref.current.visible = false;
+      if (webThread2Ref.current) webThread2Ref.current.visible = false;
     }
   });
 
@@ -566,7 +1167,7 @@ export default function SpiderMan({
           }
         }}
       >
-        <primitive object={scene} />
+        <primitive object={scene} dispose={null} />
 
         {/* ─── Character Lighting — dynamic environment or manual ─── */}
         <group>
@@ -596,17 +1197,7 @@ export default function SpiderMan({
           />
         </group>
 
-        {/* Swing Web Line */}
-        <line ref={swingWebRef}>
-          <bufferGeometry />
-          <lineBasicMaterial color="#ffffff" linewidth={3} transparent opacity={0.85} />
-        </line>
-        
-        {/* Shoot Web Line */}
-        <line ref={shootWebRef}>
-          <bufferGeometry />
-          <lineBasicMaterial color="#ffffff" linewidth={4} transparent opacity={0.95} />
-        </line>
+
 
         {/* Selection indicator */}
         {editorMode && isSelected && (
@@ -632,8 +1223,32 @@ export default function SpiderMan({
         </Html>
       </group>
 
+      {/* Swing Web Line */}
+      <line ref={swingWebRef}>
+        <bufferGeometry />
+        <lineBasicMaterial color="#ffffff" linewidth={3} transparent opacity={0.85} />
+      </line>
+      
+      {/* Shoot Web Line */}
+      <line ref={shootWebRef}>
+        <bufferGeometry />
+        <lineBasicMaterial color="#ffffff" linewidth={4} transparent opacity={0.95} />
+      </line>
+
+      {/* Auxiliary Web Thread 1 */}
+      <line ref={webThread1Ref}>
+        <bufferGeometry />
+        <lineBasicMaterial color="#ffffff" linewidth={1.5} transparent opacity={0.65} />
+      </line>
+
+      {/* Auxiliary Web Thread 2 */}
+      <line ref={webThread2Ref}>
+        <bufferGeometry />
+        <lineBasicMaterial color="#ffffff" linewidth={1.5} transparent opacity={0.65} />
+      </line>
+
       {/* Path Line */}
-      {debugVisuals?.show_path_line && pathLineGeo && (
+      {currentScene !== 'city' && debugVisuals?.show_path_line && pathLineGeo && (
         <line geometry={pathLineGeo}>
           <lineBasicMaterial color="red" linewidth={3} />
         </line>
