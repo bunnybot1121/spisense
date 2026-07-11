@@ -4,6 +4,7 @@ import { PerspectiveCamera, Stars, OrbitControls, TransformControls, Html, Envir
 import * as THREE from 'three';
 import gsap from 'gsap';
 import { useControls, button, Leva } from 'leva';
+import { Physics } from '@react-three/rapier';
 
 import { useStore } from './store/useStore';
 import Preloader from './components/ui/Preloader';
@@ -12,10 +13,14 @@ import EditorPanel from './components/ui/EditorPanel';
 import GameControls from './components/ui/GameControls';
 import SpiderMan from './components/3d/SpiderMan';
 import AlleyScene from './scenes/AlleyScene';
-import CityScene from './scenes/CityScene';
 import TutorialPanel from './components/ui/TutorialPanel';
 import AudioPlayer from './components/ui/AudioPlayer';
 import WebShooterHUD, { HUDUpdater } from './components/ui/WebShooterHUD';
+import BoardAndPlank from './components/3d/BoardAndPlank';
+import LoadingOverlay from './components/ui/LoadingOverlay';
+import { ShowcaseController3D, ShowcaseHUD } from './components/showcase/ShowcaseController';
+
+const CityScene = React.lazy(() => import('./scenes/CityScene'));
 
 // ─── LocalStorage Helpers ───
 const loadSavedState = (key, defaultValue) => {
@@ -41,19 +46,19 @@ const loadPresetState = () => {
 
 // ─── User's scene configuration ───
 const INITIAL_SPIDERMAN = {
-  position: { x: 0.30297567199812936, y: 0, z: 12.235997026238893 },
+  position: { x: 0.37, y: 0.06, z: 12.63 },
   rotation_y: -180,
-  scale: 0.95,
+  scale: 0.85,
 };
 
 const INITIAL_PATH_POINTS = [
   { x: 0.37, y: 0.06, z: 12.63 },
-  { x: 0.28, y: -0.02, z: 7.44 },
-  { x: 0.17, y: -0.08, z: 3.76 },
-  { x: -0.13, y: 0, z: -1.57 },
-  { x: -0.32, y: -0.01, z: -7.32 },
-  { x: -0.94, y: 0.04, z: -14.4 },
-  { x: -1.22, y: 0.04, z: -19.4 },
+  { x: 0.57, y: -0.05, z: 7.44 },
+  { x: 0.34, y: -0.05, z: 3.74 },
+  { x: 0.21, y: 0, z: -1.57 },
+  { x: 0.16, y: -0.01, z: -7.32 },
+  { x: -0.6, y: 0.04, z: -14.4 },
+  { x: -0.6, y: 0.04, z: -19.4 },
 ];
 
 const INITIAL_SEGMENT_ANIMATIONS = [
@@ -171,6 +176,12 @@ function SceneDirector({
   neonCityCtrl,
   setNeonAlley,
   setNeonCity,
+  boardCtrl,
+  holoPlankCtrl,
+  setBoardCtrl,
+  setHoloPlankCtrl,
+  onSelectBoard,
+  onSelectHoloPlank,
   debugVisuals,
   previewPlayCamera,
   graphicsPreset,
@@ -189,6 +200,8 @@ function SceneDirector({
   const neon1Ref = useRef();
   const neon2Ref = useRef();
   const neon3Ref = useRef();
+  const boardRef = useRef();
+  const holoPlankRef = useRef();
   const transformRef = useRef();
 
   // ─── Get selected object reference for TransformControls ───
@@ -208,6 +221,12 @@ function SceneDirector({
     }
     if (selectedType === 'neon3') {
       return neon3Ref.current || null;
+    }
+    if (selectedType === 'board') {
+      return boardRef.current || null;
+    }
+    if (selectedType === 'holoPlank') {
+      return holoPlankRef.current || null;
     }
     return null;
   }, [editorMode, selectedType, selectedIndex]);
@@ -233,8 +252,12 @@ function SceneDirector({
     } else if (selectedType === 'neon3') {
       const setter = currentScene === 'entry' ? setNeonAlley : setNeonCity;
       setter({ neon3_x: pos.x, neon3_y: pos.y, neon3_z: pos.z });
+    } else if (selectedType === 'board') {
+      setBoardCtrl({ board_x: pos.x, board_y: pos.y, board_z: pos.z });
+    } else if (selectedType === 'holoPlank') {
+      setHoloPlankCtrl({ plank_x: pos.x, plank_y: pos.y, plank_z: pos.z });
     }
-  }, [selectedObjectRef, selectedType, selectedIndex, setPointsData, setSpiderManPos, currentScene, setNeonAlley, setNeonCity]);
+  }, [selectedObjectRef, selectedType, selectedIndex, setPointsData, setSpiderManPos, currentScene, setNeonAlley, setNeonCity, setBoardCtrl, setHoloPlankCtrl]);
 
   // ─── Animations loaded callback ───
   const handleAnimationsLoaded = useCallback((names) => {
@@ -247,11 +270,19 @@ function SceneDirector({
       const camOffX = cameraCtrl?.camera_offset_x ?? 0;
       const camOffY = cameraCtrl?.camera_offset_y ?? 2;
       const camOffZ = cameraCtrl?.camera_offset_z ?? 5;
-      state.camera.position.set(
-        spiderManPos.x + camOffX,
-        spiderManPos.y + camOffY,
-        spiderManPos.z + camOffZ
-      );
+
+      const rotYDeg = spiderCtrl?.rotation_y ?? 0;
+      const angleY = THREE.MathUtils.degToRad(rotYDeg);
+
+      const rotatedBack = new THREE.Vector3(0, 0, -1).applyAxisAngle(new THREE.Vector3(0, 1, 0), angleY);
+      const rotatedRight = new THREE.Vector3(1, 0, 0).applyAxisAngle(new THREE.Vector3(0, 1, 0), angleY);
+
+      const targetPos = new THREE.Vector3(spiderManPos.x, spiderManPos.y, spiderManPos.z)
+        .addScaledVector(rotatedBack, camOffZ)
+        .addScaledVector(rotatedRight, camOffX)
+        .addScaledVector(new THREE.Vector3(0, 1, 0), camOffY);
+
+      state.camera.position.copy(targetPos);
       state.camera.lookAt(spiderManPos.x, spiderManPos.y + 1, spiderManPos.z);
     }
   });
@@ -335,7 +366,7 @@ function SceneDirector({
 
           <Suspense fallback={null}>
             {/* Alley Background */}
-            <AlleyScene alleyCtrl={alleyCtrl} enableShadows={enableShadows} />
+            <AlleyScene alleyCtrl={alleyCtrl} enableShadows={enableShadows} editorMode={editorMode} />
 
             {/* Sci-Fi Web Anchor Holographic 3D Target Marker */}
             {!editorMode && isAiming && hasTarget && targetPoint && (
@@ -486,9 +517,9 @@ function SceneDirector({
             <PerspectiveCamera makeDefault fov={50} position={[0, 2, 10]} />
           )}
 
-          <Suspense fallback={null}>
-            {/* City Background */}
-            <CityScene cityCtrl={cityCtrl} enableShadows={enableShadows} />
+          {/* City Background & Spider-Man inside same Suspense boundary to prevent race conditions during model loading */}
+          <Suspense fallback={<LoadingOverlay />}>
+            <CityScene cityCtrl={cityCtrl} enableShadows={enableShadows} editorMode={editorMode} />
 
             {/* High Performance Compass Tape & Crosshair Readout Updater */}
             {!editorMode && <HUDUpdater />}
@@ -524,7 +555,42 @@ function SceneDirector({
                 enableShadows={enableShadows}
               />
             </group>
+
+            {/* Board & Holo-Plank (Projector) Editor Gizmo targets */}
+            {editorMode && (
+              <>
+                <group
+                  ref={boardRef}
+                  position={[boardCtrl.board_x, boardCtrl.board_y, boardCtrl.board_z]}
+                />
+                <group
+                  ref={holoPlankRef}
+                  position={[holoPlankCtrl.plank_x, holoPlankCtrl.plank_y, holoPlankCtrl.plank_z]}
+                />
+              </>
+            )}
+
+            {/* Visual Board & Holo-Plank (only in editor mode now, as play mode uses the multi-project ShowcaseController3D) */}
+            {editorMode ? (
+              <BoardAndPlank
+                boardPos={{ x: boardCtrl.board_x, y: boardCtrl.board_y, z: boardCtrl.board_z }}
+                boardRotY={boardCtrl.rotation_y}
+                boardScale={boardCtrl.scale}
+                holoPlankPos={{ x: holoPlankCtrl.plank_x, y: holoPlankCtrl.plank_y, z: holoPlankCtrl.plank_z }}
+                holoPlankRotY={holoPlankCtrl.rotation_y}
+                holoPlankScale={holoPlankCtrl.scale}
+                isSelected={selectedType === 'board' || selectedType === 'holoPlank'}
+                onSelectBoard={onSelectBoard}
+                onSelectHoloPlank={onSelectHoloPlank}
+                editorMode={editorMode}
+                isNight={lightCityCtrl.env_preset === 'night'}
+              />
+            ) : (
+              currentScene === 'city' && <ShowcaseController3D />
+            )}
           </Suspense>
+
+          {/* Hologram Showcase and Project Assets removed */}
 
           {/* Interactive Path Points (always mounted, hidden via visibility prop to prevent Drei Html removeChild crashes) */}
           {pointsData.map((p, i) => (
@@ -565,6 +631,14 @@ function SceneDirector({
 // ─── App ───
 function App() {
   const currentScene = useStore((s) => s.currentScene);
+  const setScene = useStore((s) => s.setScene);
+
+  // Persist currentScene changes to localStorage
+  useEffect(() => {
+    if (currentScene !== 'preloader') {
+      localStorage.setItem('spisense_saved_scene', currentScene);
+    }
+  }, [currentScene]);
   // Editor state
   const [editorMode, setEditorMode] = useState(true);
   const [previewPlayCamera, setPreviewPlayCamera] = useState(false);
@@ -585,33 +659,64 @@ function App() {
 
   const [cityPointsData, setCityPointsData] = useState(() => {
     const saved = loadSavedState('spisense_path_points_city', null);
-    if (Array.isArray(saved) && saved.length >= 2) return saved;
     const initialCityPoints = [
-      { x: 0, y: 0, z: 20 },
-      { x: 0, y: 0, z: 10 },
-      { x: 0, y: 0, z: 0 },
-      { x: 0, y: 0, z: -10 },
-      { x: 0, y: 0, z: -20 },
+      { x: -20, y: 0.05, z: 44.5 },
+      { x: -10, y: 0.05, z: 44.5 },
+      { x: 0, y: 0.05, z: 44.5 },
+      { x: 10, y: 0.05, z: 44.5 },
+      { x: 20, y: 0.05, z: 44.5 },
     ];
+    if (Array.isArray(saved) && saved.length >= 2) {
+      const hasOldCollidingPoints = saved.some(p => p.x === 0 && (p.z === 20 || p.z === 36));
+      if (hasOldCollidingPoints) {
+        console.warn('[City Path Points Reset] Saved path points contain colliding coordinates. Resetting to safe street path.');
+        return initialCityPoints;
+      }
+      return saved;
+    }
     return initialCityPoints;
   });
 
   // Spider-Man position state — separate for Alley and City
   const [alleySpiderManPos, setAlleySpiderManPos] = useState(() => {
     const saved = loadSavedState('spisense_spiderman_alley', null);
-    if (saved && saved.position && typeof saved.position.x === 'number') return saved.position;
+    if (saved && saved.position && typeof saved.position.x === 'number') {
+      const p = saved.position;
+      const isOob = Math.abs(p.x) > 5 || p.y < -0.5 || p.y > 5 || Math.abs(p.z) > 30;
+      if (isOob) {
+        console.warn('[Alley SpiderMan Pos Reset] Saved position is out of bounds. Resetting to initial default.', p);
+        return INITIAL_SPIDERMAN.position;
+      }
+      return p;
+    }
     
     // Fallback to legacy key
     const legacy = loadSavedState('spisense_spiderman', null);
-    if (legacy && legacy.position && typeof legacy.position.x === 'number') return legacy.position;
+    if (legacy && legacy.position && typeof legacy.position.x === 'number') {
+      const p = legacy.position;
+      const isOob = Math.abs(p.x) > 5 || p.y < -0.5 || p.y > 5 || Math.abs(p.z) > 30;
+      if (isOob) {
+        return INITIAL_SPIDERMAN.position;
+      }
+      return p;
+    }
 
     return INITIAL_SPIDERMAN.position;
   });
 
   const [citySpiderManPos, setCitySpiderManPos] = useState(() => {
     const saved = loadSavedState('spisense_spiderman_city', null);
-    if (saved && saved.position && typeof saved.position.x === 'number') return saved.position;
-    return { x: 0, y: 0, z: 20 }; // default city spawn aligned with first point
+    if (saved && saved.position && typeof saved.position.x === 'number') {
+      const p = saved.position;
+      const isOldDefault = p.x === 0 && (p.z === 20 || p.z === 36);
+      const isOob = Math.abs(p.x) > 120 || p.y < -0.5 || p.y > 100 || Math.abs(p.z) > 120;
+      if (isOldDefault || isOob) {
+        console.warn('[City SpiderMan Pos Reset] Saved position is old default or out of bounds. Resetting to safe street coordinates.', p);
+        return { x: 0, y: 0.05, z: 44.5 };
+      }
+      return p;
+    }
+    return { x: 0, y: 0.05, z: 44.5 }; // default city spawn aligned with first point
   });
 
   // Segment animations — separate for Alley and City
@@ -652,13 +757,13 @@ function App() {
 
   const savedCitySpider = (() => {
     const saved = loadSavedState('spisense_spiderman_city', null);
-    const defaults = { position: { x: 0, y: 0, z: 20 }, rotation_y: -180, scale: 0.95 };
+    const defaults = { position: { x: 0, y: 0.05, z: 44.5 }, rotation_y: -180, scale: 0.95 };
     return (saved && typeof saved === 'object') ? { ...defaults, ...saved } : defaults;
   })();
 
   const savedAlley = (() => {
     const saved = loadSavedState('spisense_alley_ctrl', null);
-    const defaults = { alley_x: -2.4000000000000004, alley_y: -0.6, alley_z: 0, alley_rotation_y: 0, alley_scale: 1 };
+    const defaults = { alley_x: -2.1, alley_y: -0.6000000000000001, alley_z: -0.6000000000000001, alley_rotation_y: 0, alley_scale: 1 };
     return (saved && typeof saved === 'object') ? { ...defaults, ...saved } : defaults;
   })();
 
@@ -668,23 +773,33 @@ function App() {
     return (saved && typeof saved === 'object') ? { ...defaults, ...saved } : defaults;
   })();
 
-  const savedCamera = (() => {
-    const saved = loadSavedState('spisense_camera_ctrl', null);
-    const defaults = { camera_offset_x: 0, camera_offset_y: 1.9, camera_offset_z: 3.2, camera_lerp: 0.15 };
-    return (saved && typeof saved === 'object') ? { ...defaults, ...saved } : defaults;
+  const savedAlleyCamera = (() => {
+    const saved = loadSavedState('spisense_camera_ctrl_alley', null);
+    const legacy = loadSavedState('spisense_camera_ctrl', null);
+    const defaults = { camera_offset_x: 0, camera_offset_y: 1.9, camera_offset_z: 3.2, camera_lerp: 0.15, camera_fov: 50, camera_aim_fov: 38 };
+    const base = saved || legacy;
+    return (base && typeof base === 'object') ? { ...defaults, ...base } : defaults;
+  })();
+
+  const savedCityCamera = (() => {
+    const saved = loadSavedState('spisense_camera_ctrl_city', null);
+    const legacy = loadSavedState('spisense_camera_ctrl', null);
+    const defaults = { camera_offset_x: -0.3, camera_offset_y: 1.9, camera_offset_z: 4.0, camera_lerp: 0.08, camera_fov: 50, camera_aim_fov: 38 };
+    const base = saved || legacy;
+    return (base && typeof base === 'object') ? { ...defaults, ...base } : defaults;
   })();
 
   const savedLightingAlley = (() => {
     const saved = loadSavedState('spisense_light_ctrl_alley', null);
     const defaults = {
       ambient_intensity: 2,
-      ambient_color: '#dcdcef',
-      directional_intensity: 1.4,
-      directional_x: 5,
-      directional_y: 24.8,
-      directional_z: 9.8,
-      fog_near: 14,
-      fog_far: 40,
+      ambient_color: '#e2e2e2',
+      directional_intensity: 2,
+      directional_x: 5.700000000000001,
+      directional_y: 22.4,
+      directional_z: 12.2,
+      fog_near: 34,
+      fog_far: 100,
       env_preset: 'night',
       env_intensity: 1,
     };
@@ -694,14 +809,14 @@ function App() {
   const savedLightingCity = (() => {
     const saved = loadSavedState('spisense_light_ctrl_city', null);
     const defaults = {
-      ambient_intensity: 0.4,
-      ambient_color: '#223344',
-      directional_intensity: 1.2,
-      directional_x: 15,
-      directional_y: 20,
-      directional_z: 15,
-      fog_near: 20,
-      fog_far: 150,
+      ambient_intensity: 2,
+      ambient_color: '#ffffff',
+      directional_intensity: 2,
+      directional_x: -8.4,
+      directional_y: 5.1,
+      directional_z: 12.2,
+      fog_near: 31,
+      fog_far: 100,
       env_preset: 'sunset',
       env_intensity: 1.2,
     };
@@ -711,8 +826,8 @@ function App() {
   const savedNeonAlley = (() => {
     const saved = loadSavedState('spisense_neon_ctrl_alley', null);
     const defaults = {
-      neon1_color: '#00f3ff', neon1_intensity: 44, neon1_x: 2, neon1_y: 4, neon1_z: 2,
-      neon2_color: '#9d00ff', neon2_intensity: 33, neon2_x: -2, neon2_y: 3, neon2_z: 5,
+      neon1_color: '#00f3ff', neon1_intensity: 35, neon1_x: 2, neon1_y: 4, neon1_z: 2,
+      neon2_color: '#9d00ff', neon2_intensity: 25, neon2_x: -2, neon2_y: 3, neon2_z: 5,
       neon3_color: '#ff0055', neon3_intensity: 20, neon3_x: 0, neon3_y: 5, neon3_z: -2,
     };
     return (saved && typeof saved === 'object') ? { ...defaults, ...saved } : defaults;
@@ -728,6 +843,27 @@ function App() {
     return (saved && typeof saved === 'object') ? { ...defaults, ...saved } : defaults;
   })();
 
+  // Saved configurations for board and holo-plank
+  const savedBoard = useMemo(() => {
+    return loadSavedState('spisense_board_city', {
+      board_x: 5,
+      board_y: 3.5,
+      board_z: 40,
+      rotation_y: 0,
+      scale: 1,
+    });
+  }, []);
+
+  const savedHoloPlank = useMemo(() => {
+    return loadSavedState('spisense_holoplank_city', {
+      plank_x: 5,
+      plank_y: 0.05,
+      plank_z: 40,
+      rotation_y: 0,
+      scale: 1.2,
+    });
+  }, []);
+
   // Separate Spider-Man controls based on currentScene
   const [alleySpiderCtrl] = useControls('Alley Spider-Man', () => ({
     rotation_y: { value: savedAlleySpider.rotation_y ?? INITIAL_SPIDERMAN.rotation_y, min: -180, max: 180, step: 1 },
@@ -737,6 +873,23 @@ function App() {
   const [citySpiderCtrl] = useControls('City Spider-Man', () => ({
     rotation_y: { value: savedCitySpider.rotation_y ?? 0, min: -180, max: 180, step: 1 },
     scale: { value: (savedCitySpider.scale ?? 0.95) * 100, min: 1, max: 500, step: 1 },
+  }), { hidden: currentScene !== 'city' }, [currentScene]);
+
+  // Board and Holo-Plank Controls
+  const [boardCtrl, setBoardCtrl] = useControls('City Board', () => ({
+    board_x: { value: savedBoard.board_x ?? 5, min: -100, max: 100, step: 0.1 },
+    board_y: { value: savedBoard.board_y ?? 3.5, min: 0.5, max: 50, step: 0.1 },
+    board_z: { value: savedBoard.board_z ?? 40, min: -100, max: 100, step: 0.1 },
+    rotation_y: { value: savedBoard.rotation_y ?? 0, min: -180, max: 180, step: 1 },
+    scale: { value: savedBoard.scale ?? 1, min: 0.1, max: 5, step: 0.1 },
+  }), { hidden: currentScene !== 'city' }, [currentScene]);
+
+  const [holoPlankCtrl, setHoloPlankCtrl] = useControls('City Holo-Plank', () => ({
+    plank_x: { value: savedHoloPlank.plank_x ?? 5, min: -100, max: 100, step: 0.1 },
+    plank_y: { value: savedHoloPlank.plank_y ?? 0.05, min: 0, max: 20, step: 0.01 },
+    plank_z: { value: savedHoloPlank.plank_z ?? 40, min: -100, max: 100, step: 0.1 },
+    rotation_y: { value: savedHoloPlank.rotation_y ?? 0, min: -180, max: 180, step: 1 },
+    scale: { value: savedHoloPlank.scale ?? 1.2, min: 0.1, max: 5, step: 0.1 },
   }), { hidden: currentScene !== 'city' }, [currentScene]);
 
   const spiderCtrl = currentScene === 'entry' ? alleySpiderCtrl : citySpiderCtrl;
@@ -757,14 +910,26 @@ function App() {
     city_scale: { value: savedCity.city_scale ?? 1, min: 0.1, max: 5, step: 0.1 },
   });
 
-  const cameraCtrl = useControls('Camera', {
-    camera_offset_x: { value: savedCamera.camera_offset_x ?? 0, min: -10, max: 10, step: 0.1 },
-    camera_offset_y: { value: savedCamera.camera_offset_y ?? 1.9, min: 0, max: 10, step: 0.1 },
-    camera_offset_z: { value: savedCamera.camera_offset_z ?? 3.2, min: 1, max: 20, step: 0.1 },
-    camera_lerp: { value: savedCamera.camera_lerp ?? 0.15, min: 0.01, max: 1, step: 0.01 },
-    camera_fov: { value: savedCamera.camera_fov ?? 50, min: 20, max: 100, step: 1 },
-    camera_aim_fov: { value: savedCamera.camera_aim_fov ?? 38, min: 10, max: 90, step: 1 },
-  });
+  // Separate Camera controls based on currentScene
+  const [alleyCameraCtrl] = useControls('Alley Camera', () => ({
+    camera_offset_x: { value: savedAlleyCamera.camera_offset_x, min: -10, max: 10, step: 0.1 },
+    camera_offset_y: { value: savedAlleyCamera.camera_offset_y, min: 0, max: 10, step: 0.1 },
+    camera_offset_z: { value: savedAlleyCamera.camera_offset_z, min: 1, max: 20, step: 0.1 },
+    camera_lerp: { value: savedAlleyCamera.camera_lerp, min: 0.01, max: 1, step: 0.01 },
+    camera_fov: { value: savedAlleyCamera.camera_fov, min: 20, max: 100, step: 1 },
+    camera_aim_fov: { value: savedAlleyCamera.camera_aim_fov, min: 10, max: 90, step: 1 },
+  }), { hidden: currentScene !== 'entry' }, [currentScene]);
+
+  const [cityCameraCtrl] = useControls('City Camera', () => ({
+    camera_offset_x: { value: savedCityCamera.camera_offset_x, min: -10, max: 10, step: 0.1 },
+    camera_offset_y: { value: savedCityCamera.camera_offset_y, min: 0, max: 10, step: 0.1 },
+    camera_offset_z: { value: savedCityCamera.camera_offset_z, min: 1, max: 20, step: 0.1 },
+    camera_lerp: { value: savedCityCamera.camera_lerp, min: 0.01, max: 1, step: 0.01 },
+    camera_fov: { value: savedCityCamera.camera_fov, min: 20, max: 100, step: 1 },
+    camera_aim_fov: { value: savedCityCamera.camera_aim_fov, min: 10, max: 90, step: 1 },
+  }), { hidden: currentScene !== 'city' }, [currentScene]);
+
+  const cameraCtrl = currentScene === 'entry' ? alleyCameraCtrl : cityCameraCtrl;
 
   const [lightAlleyCtrl, setLightAlley] = useControls('Alley Lighting & FX', () => ({
     ambient_intensity: { value: savedLightingAlley.ambient_intensity, min: 0, max: 2, step: 0.1 },
@@ -908,8 +1073,13 @@ function App() {
   }, [cityCtrl]);
 
   useEffect(() => {
+    if (currentScene === 'entry') {
+      localStorage.setItem('spisense_camera_ctrl_alley', JSON.stringify(alleyCameraCtrl));
+    } else {
+      localStorage.setItem('spisense_camera_ctrl_city', JSON.stringify(cityCameraCtrl));
+    }
     localStorage.setItem('spisense_camera_ctrl', JSON.stringify(cameraCtrl));
-  }, [cameraCtrl]);
+  }, [cameraCtrl, alleyCameraCtrl, cityCameraCtrl, currentScene]);
 
   // Auto-enable camera preview mode when camera offsets are adjusted in the editor
   useEffect(() => {
@@ -931,6 +1101,14 @@ function App() {
   useEffect(() => {
     localStorage.setItem('spisense_neon_ctrl_city', JSON.stringify(neonCityCtrl));
   }, [neonCityCtrl]);
+
+  useEffect(() => {
+    localStorage.setItem('spisense_board_city', JSON.stringify(boardCtrl));
+  }, [boardCtrl]);
+
+  useEffect(() => {
+    localStorage.setItem('spisense_holoplank_city', JSON.stringify(holoPlankCtrl));
+  }, [holoPlankCtrl]);
 
   // Initialize/adjust segment animations when points or animations change
   useEffect(() => {
@@ -971,6 +1149,16 @@ function App() {
     setSelectedIndex(null);
   }, []);
 
+  const handleSelectBoard = useCallback(() => {
+    setSelectedType('board');
+    setSelectedIndex(null);
+  }, []);
+
+  const handleSelectHoloPlank = useCallback(() => {
+    setSelectedType('holoPlank');
+    setSelectedIndex(null);
+  }, []);
+
   const handleDeselectAll = useCallback(() => {
     setSelectedType(null);
     setSelectedIndex(null);
@@ -1007,25 +1195,37 @@ function App() {
 
   // Preset handlers
   const handleSaveFixedSetup = useCallback(() => {
-    const fixedConfig = {
-      alleyPointsData,
-      cityPointsData,
-      alleySpiderManPos,
-      citySpiderManPos,
-      alleySegmentAnimations,
-      citySegmentAnimations,
-      alleySpiderCtrl: { rotation_y: alleySpiderCtrl.rotation_y, scale: alleySpiderCtrl.scale / 100 },
-      citySpiderCtrl: { rotation_y: citySpiderCtrl.rotation_y, scale: citySpiderCtrl.scale / 100 },
-      alleyCtrl,
-      cityCtrl,
-      cameraCtrl,
-      lightAlleyCtrl,
-      lightCityCtrl,
-      neonAlleyCtrl,
-      neonCityCtrl,
-    };
-    localStorage.setItem('spisense_fixed_config', JSON.stringify(fixedConfig));
+    if (currentScene === 'entry') {
+      const fixedConfig = {
+        scene: 'entry',
+        pointsData: alleyPointsData,
+        spiderManPos: alleySpiderManPos,
+        segmentAnimations: alleySegmentAnimations,
+        spiderCtrl: { rotation_y: alleySpiderCtrl.rotation_y, scale: alleySpiderCtrl.scale / 100 },
+        alleyCtrl,
+        cameraCtrl,
+        lightAlleyCtrl,
+        neonAlleyCtrl,
+      };
+      localStorage.setItem('spisense_fixed_config_alley', JSON.stringify(fixedConfig));
+    } else {
+      const fixedConfig = {
+        scene: 'city',
+        pointsData: cityPointsData,
+        spiderManPos: citySpiderManPos,
+        segmentAnimations: citySegmentAnimations,
+        spiderCtrl: { rotation_y: citySpiderCtrl.rotation_y, scale: citySpiderCtrl.scale / 100 },
+        cityCtrl,
+        cameraCtrl,
+        lightCityCtrl,
+        neonCityCtrl,
+        boardCtrl,
+        holoPlankCtrl,
+      };
+      localStorage.setItem('spisense_fixed_config_city', JSON.stringify(fixedConfig));
+    }
   }, [
+    currentScene,
     alleyPointsData, cityPointsData,
     alleySpiderManPos, citySpiderManPos,
     alleySegmentAnimations, citySegmentAnimations,
@@ -1036,79 +1236,66 @@ function App() {
   ]);
 
   const handleLoadFixedSetup = useCallback(() => {
-    const saved = localStorage.getItem('spisense_fixed_config');
+    const key = currentScene === 'entry' ? 'spisense_fixed_config_alley' : 'spisense_fixed_config_city';
+    const saved = localStorage.getItem(key);
     if (saved) {
       try {
         const preset = JSON.parse(saved);
-        if (preset.alleyPointsData) {
-          localStorage.setItem('spisense_path_points_alley', JSON.stringify(preset.alleyPointsData));
-        } else if (preset.pointsData) {
-          localStorage.setItem('spisense_path_points_alley', JSON.stringify(preset.pointsData));
+        if (currentScene === 'entry') {
+          if (preset.pointsData) localStorage.setItem('spisense_path_points_alley', JSON.stringify(preset.pointsData));
+          if (preset.spiderManPos) {
+            localStorage.setItem('spisense_spiderman_alley', JSON.stringify({
+              position: preset.spiderManPos,
+              rotation_y: preset.spiderCtrl?.rotation_y ?? -180,
+              scale: preset.spiderCtrl?.scale ?? 0.95
+            }));
+          }
+          if (preset.segmentAnimations) localStorage.setItem('spisense_segment_anims_alley', JSON.stringify(preset.segmentAnimations));
+          if (preset.alleyCtrl) localStorage.setItem('spisense_alley_ctrl', JSON.stringify(preset.alleyCtrl));
+          if (preset.lightAlleyCtrl) localStorage.setItem('spisense_light_ctrl_alley', JSON.stringify(preset.lightAlleyCtrl));
+          if (preset.neonAlleyCtrl) localStorage.setItem('spisense_neon_ctrl_alley', JSON.stringify(preset.neonAlleyCtrl));
+        } else {
+          if (preset.pointsData) localStorage.setItem('spisense_path_points_city', JSON.stringify(preset.pointsData));
+          if (preset.spiderManPos) {
+            localStorage.setItem('spisense_spiderman_city', JSON.stringify({
+              position: preset.spiderManPos,
+              rotation_y: preset.spiderCtrl?.rotation_y ?? 0,
+              scale: preset.spiderCtrl?.scale ?? 0.95
+            }));
+          }
+          if (preset.segmentAnimations) localStorage.setItem('spisense_segment_anims_city', JSON.stringify(preset.segmentAnimations));
+          if (preset.cityCtrl) localStorage.setItem('spisense_city_ctrl', JSON.stringify(preset.cityCtrl));
+          if (preset.lightCityCtrl) localStorage.setItem('spisense_light_ctrl_city', JSON.stringify(preset.lightCityCtrl));
+          if (preset.neonCityCtrl) localStorage.setItem('spisense_neon_ctrl_city', JSON.stringify(preset.neonCityCtrl));
+          if (preset.boardCtrl) localStorage.setItem('spisense_board_city', JSON.stringify(preset.boardCtrl));
+          if (preset.holoPlankCtrl) localStorage.setItem('spisense_holoplank_city', JSON.stringify(preset.holoPlankCtrl));
         }
 
-        if (preset.cityPointsData) {
-          localStorage.setItem('spisense_path_points_city', JSON.stringify(preset.cityPointsData));
-        } else if (preset.pointsData) {
-          localStorage.setItem('spisense_path_points_city', JSON.stringify(preset.pointsData));
+        if (preset.cameraCtrl) {
+          if (currentScene === 'entry') {
+            localStorage.setItem('spisense_camera_ctrl_alley', JSON.stringify(preset.cameraCtrl));
+          } else {
+            localStorage.setItem('spisense_camera_ctrl_city', JSON.stringify(preset.cameraCtrl));
+          }
+          localStorage.setItem('spisense_camera_ctrl', JSON.stringify(preset.cameraCtrl));
         }
+        
+        // Persist the scene selection to local storage on load fixed
+        localStorage.setItem('spisense_saved_scene', currentScene);
 
-        if (preset.alleySpiderManPos) {
-          localStorage.setItem('spisense_spiderman_alley', JSON.stringify({
-            position: preset.alleySpiderManPos,
-            rotation_y: preset.alleySpiderCtrl?.rotation_y ?? -180,
-            scale: preset.alleySpiderCtrl?.scale ?? 0.95
-          }));
-        } else if (preset.spiderManPos) {
-          localStorage.setItem('spisense_spiderman_alley', JSON.stringify({
-            position: preset.spiderManPos,
-            rotation_y: preset.spiderCtrl?.rotation_y ?? -180,
-            scale: preset.spiderCtrl?.scale ?? 0.95
-          }));
-        }
-
-        if (preset.citySpiderManPos) {
-          localStorage.setItem('spisense_spiderman_city', JSON.stringify({
-            position: preset.citySpiderManPos,
-            rotation_y: preset.citySpiderCtrl?.rotation_y ?? 0,
-            scale: preset.citySpiderCtrl?.scale ?? 0.95
-          }));
-        } else if (preset.spiderManPos) {
-          localStorage.setItem('spisense_spiderman_city', JSON.stringify({
-            position: preset.spiderManPos,
-            rotation_y: preset.spiderCtrl?.rotation_y ?? 0,
-            scale: preset.spiderCtrl?.scale ?? 0.95
-          }));
-        }
-
-        if (preset.alleySegmentAnimations) {
-          localStorage.setItem('spisense_segment_anims_alley', JSON.stringify(preset.alleySegmentAnimations));
-        } else if (preset.segmentAnimations) {
-          localStorage.setItem('spisense_segment_anims_alley', JSON.stringify(preset.segmentAnimations));
-        }
-
-        if (preset.citySegmentAnimations) {
-          localStorage.setItem('spisense_segment_anims_city', JSON.stringify(preset.citySegmentAnimations));
-        } else if (preset.segmentAnimations) {
-          localStorage.setItem('spisense_segment_anims_city', JSON.stringify(preset.segmentAnimations));
-        }
-
-        if (preset.alleyCtrl) localStorage.setItem('spisense_alley_ctrl', JSON.stringify(preset.alleyCtrl));
-        if (preset.cityCtrl) localStorage.setItem('spisense_city_ctrl', JSON.stringify(preset.cityCtrl));
-        if (preset.cameraCtrl) localStorage.setItem('spisense_camera_ctrl', JSON.stringify(preset.cameraCtrl));
-        if (preset.lightAlleyCtrl) localStorage.setItem('spisense_light_ctrl_alley', JSON.stringify(preset.lightAlleyCtrl));
-        if (preset.lightCityCtrl) localStorage.setItem('spisense_light_ctrl_city', JSON.stringify(preset.lightCityCtrl));
-        if (preset.neonAlleyCtrl) localStorage.setItem('spisense_neon_ctrl_alley', JSON.stringify(preset.neonAlleyCtrl));
-        if (preset.neonCityCtrl) localStorage.setItem('spisense_neon_ctrl_city', JSON.stringify(preset.neonCityCtrl));
         window.location.reload();
       } catch (err) {
         console.error('[App] Error parsing or loading preset config:', err);
       }
     }
-  }, []);
+  }, [currentScene]);
 
   // Reset function
   const handleResetToDefaults = useCallback(() => {
     localStorage.removeItem('spisense_fixed_config');
+    localStorage.removeItem('spisense_fixed_config_alley');
+    localStorage.removeItem('spisense_fixed_config_city');
+    localStorage.removeItem('spisense_saved_scene');
     localStorage.removeItem('spisense_spiderman');
     localStorage.removeItem('spisense_path_points');
     localStorage.removeItem('spisense_segment_anims_data');
@@ -1121,12 +1308,16 @@ function App() {
     localStorage.removeItem('spisense_alley_ctrl');
     localStorage.removeItem('spisense_city_ctrl');
     localStorage.removeItem('spisense_camera_ctrl');
+    localStorage.removeItem('spisense_camera_ctrl_alley');
+    localStorage.removeItem('spisense_camera_ctrl_city');
     localStorage.removeItem('spisense_light_ctrl_alley');
     localStorage.removeItem('spisense_light_ctrl_city');
     localStorage.removeItem('spisense_neon_ctrl_alley');
     localStorage.removeItem('spisense_neon_ctrl_city');
-    localStorage.removeItem('spisense_light_ctrl'); // clean up old keys
-    localStorage.removeItem('spisense_neon_ctrl'); // clean up old keys
+    localStorage.removeItem('spisense_light_ctrl');
+    localStorage.removeItem('spisense_neon_ctrl');
+    localStorage.removeItem('spisense_board_city');
+    localStorage.removeItem('spisense_holoplank_city');
     window.location.reload();
   }, []);
 
@@ -1143,38 +1334,46 @@ function App() {
         dpr={calculatedDpr}
         onPointerMissed={handleDeselectAll}
       >
-        <SceneDirector
-          editorMode={editorMode}
-          selectedType={selectedType}
-          selectedIndex={selectedIndex}
-          onSelectPoint={handleSelectPoint}
-          onSelectSpiderMan={handleSelectSpiderMan}
-          onSelectNeon={handleSelectNeon}
-          onDeselectAll={handleDeselectAll}
-          pointsData={pointsData}
-          setPointsData={setPointsData}
-          spiderManPos={spiderManPos}
-          setSpiderManPos={setSpiderManPos}
-          segmentAnimations={segmentAnimations}
-          animationNames={animationNames}
-          setAnimationNames={setAnimationNames}
-          activeAnimation={activeAnimation}
-          onActiveAnimationChange={setActiveAnimation}
-          spiderCtrl={spiderCtrl}
-          alleyCtrl={alleyCtrl}
-          cityCtrl={cityCtrl}
-          cameraCtrl={cameraCtrl}
-          lightAlleyCtrl={lightAlleyCtrl}
-          lightCityCtrl={lightCityCtrl}
-          neonAlleyCtrl={neonAlleyCtrl}
-          neonCityCtrl={neonCityCtrl}
-          setNeonAlley={setNeonAlley}
-          setNeonCity={setNeonCity}
-          debugVisuals={debugVisuals}
-          previewPlayCamera={previewPlayCamera}
-          graphicsPreset={activePreset}
-          enableShadows={shadowsEnabled}
-        />
+        <Physics>
+          <SceneDirector
+            editorMode={editorMode}
+            selectedType={selectedType}
+            selectedIndex={selectedIndex}
+            onSelectPoint={handleSelectPoint}
+            onSelectSpiderMan={handleSelectSpiderMan}
+            onSelectNeon={handleSelectNeon}
+            onDeselectAll={handleDeselectAll}
+            pointsData={pointsData}
+            setPointsData={setPointsData}
+            spiderManPos={spiderManPos}
+            setSpiderManPos={setSpiderManPos}
+            segmentAnimations={segmentAnimations}
+            animationNames={animationNames}
+            setAnimationNames={setAnimationNames}
+            activeAnimation={activeAnimation}
+            onActiveAnimationChange={setActiveAnimation}
+            spiderCtrl={spiderCtrl}
+            alleyCtrl={alleyCtrl}
+            cityCtrl={cityCtrl}
+            cameraCtrl={cameraCtrl}
+            lightAlleyCtrl={lightAlleyCtrl}
+            lightCityCtrl={lightCityCtrl}
+            neonAlleyCtrl={neonAlleyCtrl}
+            neonCityCtrl={neonCityCtrl}
+            setNeonAlley={setNeonAlley}
+            setNeonCity={setNeonCity}
+            boardCtrl={boardCtrl}
+            holoPlankCtrl={holoPlankCtrl}
+            setBoardCtrl={setBoardCtrl}
+            setHoloPlankCtrl={setHoloPlankCtrl}
+            onSelectBoard={handleSelectBoard}
+            onSelectHoloPlank={handleSelectHoloPlank}
+            debugVisuals={debugVisuals}
+            previewPlayCamera={previewPlayCamera}
+            graphicsPreset={activePreset}
+            enableShadows={shadowsEnabled}
+          />
+        </Physics>
       </Canvas>
 
       <EntryUI />
@@ -1183,6 +1382,7 @@ function App() {
       {!editorMode && <GameControls />}
       {!editorMode && <WebShooterHUD />}
       {!editorMode && currentScene === 'entry' && <TutorialPanel />}
+      {!editorMode && <ShowcaseHUD />}
 
       {/* Editor Panel (only in entry scene + editor mode) */}
       {editorMode && (
@@ -1202,6 +1402,8 @@ function App() {
           neonCityCtrl={neonCityCtrl}
           alleyCtrl={alleyCtrl}
           currentScene={currentScene}
+          boardCtrl={boardCtrl}
+          holoPlankCtrl={holoPlankCtrl}
           onAddPoint={handleAddPoint}
           onRemovePoint={handleRemovePoint}
           onSegmentAnimationChange={handleSegmentAnimationChange}
@@ -1215,6 +1417,7 @@ function App() {
           onResetToDefaults={handleResetToDefaults}
           onSaveFixedSetup={handleSaveFixedSetup}
           onLoadFixedSetup={handleLoadFixedSetup}
+          onSceneChange={setScene}
         />
       )}
 

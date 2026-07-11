@@ -4,6 +4,7 @@ import { useStore } from '../../store/useStore';
 import { useFrame } from '@react-three/fiber';
 import { useControls } from 'leva';
 import * as THREE from 'three';
+import { RigidBody, CapsuleCollider, useRapier } from '@react-three/rapier';
 
 // ─── Animation name resolver ───
 // Fuzzy-matches animation names from the GLB
@@ -17,14 +18,20 @@ function findAnim(actions, ...keywords) {
 }
 
 // ─── Movement Constants ───
-const MOVE_SPEED = 0.08; // path fraction per second when running (~12s for full path)
-const STRAFE_SPEED = 1.5; // lateral offset speed (units/sec)
+const MOVE_SPEED = 0.052; // path fraction per second when running (increased to match scene motion)
+const STRAFE_SPEED = 1.2; // lateral offset speed (units/sec)
 const MAX_STRAFE = 1.5; // max lateral offset from path
 const ACCELERATION = 4.0; // speed ramp up factor
 const DECELERATION = 6.0; // speed ramp down factor
 const ROTATION_SMOOTHING = 10.0; // rotation slerp speed
-const SWING_SPEED = 0.15; // faster movement while swinging
+const SWING_SPEED = 0.098; // faster movement while swinging (increased to match scene motion)
 const SWING_LIFT = 4.0; // vertical lift during swing
+
+// ─── Keyboard Control Set mappings ───
+const KEY_FORWARD = new Set(['w', 'W', 'ArrowUp']);
+const KEY_BACKWARD = new Set(['s', 'S', 'ArrowDown']);
+const KEY_LEFT = new Set(['a', 'A', 'ArrowLeft']);
+const KEY_RIGHT = new Set(['d', 'D', 'ArrowRight']);
 
 export default function SpiderMan({
   spiderCtrl,
@@ -56,12 +63,39 @@ export default function SpiderMan({
   const swingPhase = useStore((s) => s.swingPhase);
   const finishSwing = useStore((s) => s.finishSwing);
 
+  // ─── Rapier Physics Hook & Refs ───
+  const rigidBodyRef = useRef();
+  const { rapier, world, rigidBodyStates } = useRapier();
+  const prevPositionRef = useRef(new THREE.Vector3());
+  const swingVelocityRef = useRef(new THREE.Vector3());
+  const needsVelocitySeedRef = useRef(false);
+  const jumpImpulseAppliedRef = useRef(false);
+  const prevEditorModeRef = useRef(editorMode);
+
+  const getBodyType = () => {
+    const type = editorMode
+      ? "fixed"
+      : (currentScene === 'entry'
+          ? "kinematicPosition"
+          : (isSwinging || useStore.getState().isWebZipping || useStore.getState().activeShowcaseProject
+              ? "kinematicPosition"
+              : "dynamic"));
+    console.log('[SpiderMan getBodyType] Resolved body type:', { type, editorMode, currentScene });
+    return type;
+  };
+
+
+
+
   // ─── Animation tracking ───
   const currentActionRef = useRef(null);
   const currentAnimName = useRef('');
   const prevPlayerAction = useRef('idle');
 
   // ─── Movement state ───
+  const initialPosition = useMemo(() => {
+    return [spiderManPos?.x ?? 0, spiderManPos?.y ?? 0, spiderManPos?.z ?? 0];
+  }, [spiderManPos?.x, spiderManPos?.y, spiderManPos?.z]);
   const fractionRef = useRef(0); // position along path (0-1)
   const speedRef = useRef(0); // current movement speed
   const lateralOffsetRef = useRef(0); // strafe offset
@@ -74,9 +108,17 @@ export default function SpiderMan({
   const webThread1Ref = useRef();
   const webThread2Ref = useRef();
   const aimYawRef = useRef(0);
+  const playYawRef = useRef(0);
+  const smoothedLookTargetRef = useRef(new THREE.Vector3());
   const aimPitchRef = useRef(0);
   const justStartedAiming = useRef(false);
   const lastTouchRef = useRef({ x: 0, y: 0 });
+  const isPointerDownRef = useRef(false);
+  const lastPointerRef = useRef({ x: 0, y: 0 });
+  const isInitializedRef = useRef(false);
+  const jumpProgressRef = useRef(1);
+  const dynamicSwingTargetGroundYRef = useRef(0);
+  const dynamicSwingCamDirRef = useRef(new THREE.Vector3());
 
   // ─── Dynamic Swing and Targeting ───
   const raycaster = useMemo(() => new THREE.Raycaster(), []);
@@ -201,6 +243,12 @@ export default function SpiderMan({
     if (idleName) playAnimation(idleName);
   }, [editorMode, actions, animMap, playAnimation]);
 
+  // Reset rigid body ref and initialization state when toggling modes or scenes
+  useEffect(() => {
+    rigidBodyRef.current = null;
+    isInitializedRef.current = false;
+  }, [editorMode, currentScene]);
+
   // ─── Handle player action changes → animation transitions ───
   useEffect(() => {
     if (editorMode) return;
@@ -212,6 +260,9 @@ export default function SpiderMan({
       if (swingPhase === 'start') {
         const anim = animMap.swingStart || animMap.jumpUp || animMap.idle;
         if (anim) playAnimation(anim, { loop: false, clampWhenFinished: true, fadeIn: 0.15 });
+      } else if (swingPhase === 'loop') {
+        const anim = animMap.swingLoop || animMap.swingStart || animMap.jumpUp;
+        if (anim) playAnimation(anim, { fadeIn: 0.2 });
       } else if (swingPhase === 'end') {
         const anim = animMap.swingEnd || animMap.jumpUp || animMap.idle;
         if (anim) playAnimation(anim, { loop: false, clampWhenFinished: true, fadeIn: 0.15 });
@@ -251,8 +302,7 @@ export default function SpiderMan({
         break;
       }
       case 'webZip': {
-        const anim = animMap.jumpUp || animMap.idle;
-        if (anim) playAnimation(anim, { fadeIn: 0.1, timeScale: 1.2 });
+        // Handled dynamically in useFrame to crossfade between swingStart and swingEnd
         break;
       }
       case 'hanging': {
@@ -270,6 +320,12 @@ export default function SpiderMan({
         if (anim) playAnimation(anim, { fadeIn: 0.15 });
         break;
       }
+      case 'jump': {
+        jumpProgressRef.current = 0;
+        const anim = animMap.jumpUp || animMap.idle;
+        if (anim) playAnimation(anim, { loop: false, clampWhenFinished: true, fadeIn: 0.1 });
+        break;
+      }
       default: {
         const anim = animMap.idle || Object.keys(actions)[0];
         if (anim) playAnimation(anim, { fadeIn: 0.25 });
@@ -280,11 +336,27 @@ export default function SpiderMan({
 
   // ─── Mouse Aiming (Movement Delta) and Pointer Lock Listeners ───
   useEffect(() => {
+    const handlePointerDown = (e) => {
+      if (e.target.tagName === 'BUTTON' || e.target.closest('.editor-panel') || e.target.closest('.game-controls-container') || e.target.closest('[class*="leva"]')) return;
+      isPointerDownRef.current = true;
+      lastPointerRef.current = { x: e.clientX, y: e.clientY };
+    };
+
+    const handlePointerUp = () => {
+      isPointerDownRef.current = false;
+    };
+
     const handlePointerMove = (e) => {
       const storeState = useStore.getState();
       if (storeState.isAiming) {
-        aimYawRef.current -= e.movementX * 0.0025;
-        aimPitchRef.current = Math.max(-0.6, Math.min(0.6, aimPitchRef.current - e.movementY * 0.0025));
+        aimYawRef.current -= e.movementX * 0.0015;
+        aimPitchRef.current = Math.max(-0.6, Math.min(0.6, aimPitchRef.current - e.movementY * 0.0015));
+      } else if (isPointerDownRef.current) {
+        const dx = e.clientX - lastPointerRef.current.x;
+        const dy = e.clientY - lastPointerRef.current.y;
+        aimYawRef.current -= dx * 0.0025;
+        aimPitchRef.current = Math.max(-0.6, Math.min(0.6, aimPitchRef.current - dy * 0.0025));
+        lastPointerRef.current = { x: e.clientX, y: e.clientY };
       }
     };
 
@@ -295,18 +367,20 @@ export default function SpiderMan({
     };
 
     const handleTouchMove = (e) => {
-      const storeState = useStore.getState();
-      if (storeState.isAiming && e.touches.length > 0) {
+      if (e.touches.length > 0) {
         const dx = e.touches[0].clientX - lastTouchRef.current.x;
         const dy = e.touches[0].clientY - lastTouchRef.current.y;
         
-        aimYawRef.current -= dx * 0.005;
-        aimPitchRef.current = Math.max(-0.6, Math.min(0.6, aimPitchRef.current - dy * 0.005));
+        aimYawRef.current -= dx * 0.002;
+        aimPitchRef.current = Math.max(-0.6, Math.min(0.6, aimPitchRef.current - dy * 0.002));
 
         lastTouchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
       }
     };
 
+    window.addEventListener('pointerdown', handlePointerDown);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
     window.addEventListener('pointermove', handlePointerMove);
     window.addEventListener('touchstart', handleTouchStart);
     window.addEventListener('touchmove', handleTouchMove, { passive: true });
@@ -329,6 +403,9 @@ export default function SpiderMan({
     );
 
     return () => {
+      window.removeEventListener('pointerdown', handlePointerDown);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointercancel', handlePointerUp);
       window.removeEventListener('pointermove', handlePointerMove);
       window.removeEventListener('touchstart', handleTouchStart);
       window.removeEventListener('touchmove', handleTouchMove);
@@ -344,6 +421,8 @@ export default function SpiderMan({
     }, 800); // allow end animation to play
     return () => clearTimeout(timer);
   }, [swingPhase, finishSwing]);
+
+
 
   // ─── Keyboard shortcuts for animations (1-9, 0) — editor only ───
   useEffect(() => {
@@ -383,31 +462,8 @@ export default function SpiderMan({
     return new THREE.CatmullRomCurve3(vectors);
   }, [pathPoints]);
 
-  // Initialize play mode fraction from closest point on path to editor settled position
-  useEffect(() => {
-    if (!editorMode && pathCurve && spiderManPos) {
-      let minDistance = Infinity;
-      let closestFraction = 0;
-      const samples = 100;
-      const tempVector = new THREE.Vector3();
-      const targetVector = new THREE.Vector3(spiderManPos.x, spiderManPos.y, spiderManPos.z);
-      
-      for (let i = 0; i <= samples; i++) {
-        const t = i / samples;
-        pathCurve.getPointAt(t, tempVector);
-        const dist = tempVector.distanceTo(targetVector);
-        if (dist < minDistance) {
-          minDistance = dist;
-          closestFraction = t;
-        }
-      }
-      fractionRef.current = closestFraction;
-      console.log(`[SpiderMan] Synced starting path fraction to ${closestFraction.toFixed(3)} based on editor position`);
-    } else if (editorMode) {
-      fractionRef.current = 0;
-      speedRef.current = 0;
-    }
-  }, [editorMode, pathCurve, spiderManPos]);
+  // Path fraction syncing is now handled synchronously in the useFrame initialization block
+  // to avoid race conditions during play mode entry.
 
   // ─── Temp vectors (reuse to avoid GC) ───
   const _posOnCurve = useMemo(() => new THREE.Vector3(), []);
@@ -424,16 +480,8 @@ export default function SpiderMan({
     frameCountRef.current++;
     if (!group.current) return;
 
-    // ─── Editor Mode ───
-    if (editorMode) {
-      group.current.position.set(0, 0, 0);
-      group.current.scale.setScalar(spiderCtrl?.scale ?? 100);
-      const rotYDeg = spiderCtrl?.rotation_y ?? 0;
-      group.current.rotation.y = THREE.MathUtils.degToRad(rotYDeg);
-      return;
-    }
-
-    // Read store states
+    // Read store states and active keys at the very beginning of the frame
+    // to avoid Temporal Dead Zone errors due to hoisting.
     const storeState = useStore.getState();
     const currentScene = storeState.currentScene;
     const currentAction = storeState.playerAction;
@@ -441,18 +489,243 @@ export default function SpiderMan({
     const currentlyZipping = storeState.isWebZipping;
     const isAiming = storeState.isAiming;
     const isDynamic = storeState.isDynamicSwinging;
+    const activeKeys = storeState.activeKeys || new Set();
+
+    // Resolve rigidBodyRef.current manually to support React 18 where RigidBody lacks forwardRef
+    let resolved = !!rigidBodyRef.current;
+    if (!resolved && group.current.parent && rigidBodyStates) {
+      for (const s of rigidBodyStates.values()) {
+        if (s.object === group.current.parent || s.object === group.current.parent.parent) {
+          const wasResolved = !!rigidBodyRef.current;
+          rigidBodyRef.current = s.rigidBody;
+          if (!wasResolved && rigidBodyRef.current) {
+            group.current.position.set(0, 0, 0);
+          }
+          resolved = true;
+          break;
+        }
+      }
+    }
+    if (!resolved) {
+      rigidBodyRef.current = null;
+    }
+
+    // ─── Cinematic Showcase Mode ───
+    if (storeState.activeShowcaseProject) {
+      const platformPos = storeState.showcasePlatformPos || new THREE.Vector3(0, 0.05, 35);
+      const currentPos = rigidBodyRef.current 
+        ? rigidBodyRef.current.translation() 
+        : new THREE.Vector3(spiderManPos.x, spiderManPos.y, spiderManPos.z);
+      
+      const current3D = new THREE.Vector3(currentPos.x, currentPos.y, currentPos.z);
+      const target3D = platformPos.clone();
+      
+      const distance = current3D.distanceTo(target3D);
+      const dt = Math.min(delta, 0.05);
+
+      if (distance > 0.04) {
+        const moveDir = target3D.clone().sub(current3D).normalize();
+        const moveDist = Math.min(distance, dt * 3.5);
+        current3D.addScaledVector(moveDir, moveDist);
+
+        // Face the platform center
+        const targetAngle = Math.atan2(moveDir.x, moveDir.z);
+        _targetQuat.setFromAxisAngle(_up, targetAngle);
+        group.current.quaternion.slerp(_targetQuat, 0.15);
+
+        // Run/walk towards center
+        const walkAnim = animMap.run || animMap.walk || animMap.idle;
+        if (walkAnim && currentAnimName.current !== walkAnim) {
+          playAnimation(walkAnim, { fadeIn: 0.15 });
+        }
+      } else {
+        // Arrived at platform center
+        current3D.copy(target3D);
+
+        // Rotate to face camera (opposite direction of the platform's Y rotation offset)
+        const radRotY = THREE.MathUtils.degToRad(storeState.showcaseProjectRotationY ?? 0);
+        // Face camera (angle radRotY + Math.PI)
+        const targetAngle = radRotY + Math.PI;
+        _targetQuat.setFromAxisAngle(_up, targetAngle);
+        group.current.quaternion.slerp(_targetQuat, 0.08);
+
+        // CONFIDENT HERO IDLE POSE
+        const heroAnim = animMap.hip_hop || animMap.idle || Object.keys(actions)[0];
+        if (heroAnim && currentAnimName.current !== heroAnim) {
+          playAnimation(heroAnim, { fadeIn: 0.25 });
+        }
+
+        // Advance to next cinematic phases automatically based on arrival
+        if (storeState.showcasePhase === 'character_move') {
+          useStore.setState({ showcasePhase: 'camera_move' });
+        }
+      }
+
+      if (rigidBodyRef.current) {
+        rigidBodyRef.current.setNextKinematicTranslation({ x: current3D.x, y: current3D.y, z: current3D.z });
+      }
+      group.current.position.set(0, 0, 0);
+
+      useStore.setState({
+        characterPosition: [current3D.x, current3D.y, current3D.z],
+        freePosition: current3D.clone()
+      });
+
+      // Override camera position and target
+      if (storeState.showcaseCameraPosition && storeState.showcaseCameraLookAt) {
+        state.camera.position.lerp(storeState.showcaseCameraPosition, 0.08);
+        smoothedLookTargetRef.current.lerp(storeState.showcaseCameraLookAt, 0.08);
+        state.camera.lookAt(smoothedLookTargetRef.current);
+      }
+
+      // Track main directional light to player position
+      const dirLight = state.scene.getObjectByName('mainDirLight');
+      if (dirLight) {
+        dirLight.position.set(
+          current3D.x + (lightCtrl?.directional_x ?? -8.4),
+          current3D.y + (lightCtrl?.directional_y ?? 5.1),
+          current3D.z + (lightCtrl?.directional_z ?? 12.2)
+        );
+        dirLight.target.position.copy(current3D);
+        dirLight.target.updateMatrixWorld();
+      }
+      return;
+    }
+
+    // ─── Editor Mode ───
+    if (editorMode) {
+      if (rigidBodyRef.current && group.current.parent && group.current.parent.parent) {
+        const parentPos = group.current.parent.parent.position;
+        rigidBodyRef.current.setTranslation({ x: parentPos.x, y: parentPos.y, z: parentPos.z }, true);
+        rigidBodyRef.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
+        rigidBodyRef.current.setAngvel({ x: 0, y: 0, z: 0 }, true);
+        // Reset local position of the RigidBody Three.js object to prevent double-positioning
+        group.current.parent.position.set(0, 0, 0);
+      }
+      prevEditorModeRef.current = true;
+      isInitializedRef.current = false;
+      fractionRef.current = 0;
+      speedRef.current = 0;
+      lateralOffsetRef.current = 0;
+      group.current.position.set(0, 0, 0);
+      group.current.scale.setScalar(spiderCtrl?.scale ?? 100);
+      const rotYDeg = spiderCtrl?.rotation_y ?? 0;
+      group.current.rotation.y = THREE.MathUtils.degToRad(rotYDeg);
+      return;
+    }
+
+    prevEditorModeRef.current = false;
+
+    // Prevent running play mode frame updates before initialization is complete
+    if (!isInitializedRef.current) {
+      if (group.current && rigidBodyRef.current) {
+        // 1. Sync starting path fraction and lateral offset synchronously
+        let synced = false;
+        if (currentScene !== 'city') {
+          if (pathCurve && spiderManPos) {
+            let minDistance = Infinity;
+            let closestFraction = 0;
+            const samples = 100;
+            const tempVector = new THREE.Vector3();
+            const targetVector = new THREE.Vector3(spiderManPos.x, spiderManPos.y, spiderManPos.z);
+            
+            for (let i = 0; i <= samples; i++) {
+              const t = i / samples;
+              pathCurve.getPointAt(t, tempVector);
+              const dist = tempVector.distanceTo(targetVector);
+              if (dist < minDistance) {
+                minDistance = dist;
+                closestFraction = t;
+              }
+            }
+
+            // Calculate starting lateral offset at closestFraction
+            pathCurve.getPointAt(closestFraction, tempVector);
+            const tangentVec = new THREE.Vector3();
+            pathCurve.getTangentAt(closestFraction, tangentVec);
+            const upVec = new THREE.Vector3(0, 1, 0);
+            const lateralVec = new THREE.Vector3().crossVectors(tangentVec, upVec).normalize();
+
+            const diffVec = new THREE.Vector3().subVectors(targetVector, tempVector);
+            const lateralOffset = diffVec.dot(lateralVec);
+
+            fractionRef.current = closestFraction;
+            // Keep lateral offset clamped to MAX_STRAFE to prevent clipping walls at spawn
+            lateralOffsetRef.current = THREE.MathUtils.clamp(lateralOffset, -MAX_STRAFE, MAX_STRAFE);
+            console.log(`[SpiderMan Physics Init] Synced starting path fraction to ${closestFraction.toFixed(3)} and lateral offset to ${lateralOffsetRef.current.toFixed(3)} based on editor position:`, spiderManPos);
+            synced = true;
+          }
+        } else {
+          synced = true; // City scene doesn't need path curve
+        }
+
+        if (synced) {
+          // 2. Set initial physics body translation
+          if (spiderManPos) {
+            rigidBodyRef.current.setTranslation(
+              { x: spiderManPos.x, y: spiderManPos.y, z: spiderManPos.z },
+              true
+            );
+            rigidBodyRef.current.setLinvel({ x: 0, y: 0, z: 0 }, true);
+            rigidBodyRef.current.setAngvel({ x: 0, y: 0, z: 0 }, true);
+            rigidBodyRef.current.wakeUp();
+            console.log(`[SpiderMan Physics] useFrame initialized position at:`, spiderManPos);
+          }
+
+          // 3. Set initial rotation and yaw refs
+          const rotYDeg = spiderCtrl?.rotation_y ?? 0;
+          const initialRotY = THREE.MathUtils.degToRad(rotYDeg);
+          group.current.rotation.y = initialRotY;
+          
+          aimYawRef.current = initialRotY;
+          playYawRef.current = initialRotY;
+          if (spiderManPos) {
+            smoothedLookTargetRef.current.set(spiderManPos.x, spiderManPos.y + 1, spiderManPos.z);
+          }
+
+          isInitializedRef.current = true;
+          group.current.position.set(0, 0, 0);
+        } else {
+          // Path curve not ready, keep model aligned and wait
+          if (group.current) {
+            group.current.position.set(0, 0, 0);
+          }
+          return;
+        }
+      } else {
+        // Wait until rigidBody is resolved before doing anything, keeping model aligned
+        if (group.current) {
+          group.current.position.set(0, 0, 0);
+        }
+        return;
+      }
+    }
+    // (Store states and active keys are read at the start of useFrame)
+
+    if (currentlySwinging || currentlyZipping) {
+      const euler = new THREE.Euler().setFromQuaternion(group.current.quaternion, 'YXZ');
+      playYawRef.current = euler.y;
+    }
+
+    let hasForward = [...activeKeys].some(k => KEY_FORWARD.has(k));
+    let hasBackward = [...activeKeys].some(k => KEY_BACKWARD.has(k));
+    let hasLeft = [...activeKeys].some(k => KEY_LEFT.has(k));
+    let hasRight = [...activeKeys].some(k => KEY_RIGHT.has(k));
+
+    // Mobile / touch controls fallback if no movement keys are pressed
+    if (!hasForward && !hasBackward && !hasLeft && !hasRight) {
+      if (currentAction === 'runForward') hasForward = true;
+      else if (currentAction === 'runBackward') hasBackward = true;
+      else if (currentAction === 'strafeLeft') hasLeft = true;
+      else if (currentAction === 'strafeRight') hasRight = true;
+    }
 
     const dt = Math.min(delta, 0.05); // cap delta to prevent jumps
     const scale = spiderCtrl?.scale ?? 100;
 
     // ─── 1. Sci-Fi Aiming & Raycasting Target Check (Throttled & Optimized) ───
     if (isAiming && !currentlySwinging && !currentlyZipping) {
-      let shouldRaycast = true;
-      if (graphicsPreset === 'Performance') {
-        shouldRaycast = (frameCountRef.current % 3 === 0);
-      } else if (graphicsPreset === 'Balanced') {
-        shouldRaycast = (frameCountRef.current % 2 === 0);
-      }
+      const shouldRaycast = (frameCountRef.current % 2 === 0); // Always throttle raycasting to every 2 frames for smooth performance
 
       if (shouldRaycast) {
         raycaster.setFromCamera(centerMouse, state.camera);
@@ -482,342 +755,552 @@ export default function SpiderMan({
       }
     }
 
-    // ─── 2. Calculate coordinates (Dynamic Swing vs Free Roaming vs Path Snapping) ───
     let finalX = 0;
     let finalY = 0;
     let finalZ = 0;
+
+    const currentlyKinematic = (currentlySwinging || currentlyZipping || currentScene === 'entry');
+    const currentBodyPos = rigidBodyRef.current ? rigidBodyRef.current.translation() : new THREE.Vector3(spiderManPos.x, spiderManPos.y, spiderManPos.z);
 
     // Get character facing direction for local camera orientation
     const charForward = new THREE.Vector3(0, 0, 1).applyQuaternion(group.current.quaternion).normalize();
     const charRight = new THREE.Vector3(1, 0, 0).applyQuaternion(group.current.quaternion).normalize();
 
-    if (currentlyZipping && storeState.webZipTarget) {
-      // Initialize zip start position
-      if (!dynamicSwingStartRef.current) {
-        dynamicSwingStartRef.current = group.current.position.clone();
-        useStore.setState({ webZipStart: dynamicSwingStartRef.current });
-        webZipProgressRef.current = 0;
-      }
-
-      // Progress zip physics interpolation
-      webZipProgressRef.current = Math.min(webZipProgressRef.current + dt * 2.8, 1);
-      const t = webZipProgressRef.current;
-      const startPos = dynamicSwingStartRef.current;
-
-      finalX = THREE.MathUtils.lerp(startPos.x, storeState.webZipTarget.x, t);
-      finalY = THREE.MathUtils.lerp(startPos.y, storeState.webZipTarget.y, t);
-      finalZ = THREE.MathUtils.lerp(startPos.z, storeState.webZipTarget.z, t);
-
-      // Orient Spider-Man facing the zip target horizontally
-      const dirToTarget = storeState.webZipTarget.clone().sub(startPos);
-      dirToTarget.y = 0;
-      if (dirToTarget.lengthSq() > 0.001) {
-        const targetAngle = Math.atan2(dirToTarget.x, dirToTarget.z);
-        _targetQuat.setFromAxisAngle(_up, targetAngle);
-        group.current.quaternion.slerp(_targetQuat, 15 * dt);
-      }
-
-      // Complete zip and land
-      if (t >= 1) {
-        dynamicSwingStartRef.current = null;
-        webZipProgressRef.current = 0;
-
-        // Offset 0.45m away from the wall to prevent clipping
-        const offsetDir = new THREE.Vector3().subVectors(startPos, storeState.webZipTarget).normalize();
-        const finalHangingPos = storeState.webZipTarget.clone().addScaledVector(offsetDir, 0.45);
-        useStore.setState({ freePosition: finalHangingPos });
-
-        // Update path fraction & lateral offset in Alley scene so we release/drop down locally
-        if (currentScene !== 'city' && pathCurve) {
-          let minDistance = Infinity;
-          let closestFraction = 0;
-          const samples = 100;
-          const tempVector = new THREE.Vector3();
-          
-          for (let i = 0; i <= samples; i++) {
-            const sampleT = i / samples;
-            pathCurve.getPointAt(sampleT, tempVector);
-            const dist = tempVector.distanceTo(finalHangingPos);
-            if (dist < minDistance) {
-              minDistance = dist;
-              closestFraction = sampleT;
-            }
-          }
-          fractionRef.current = closestFraction;
-          
-          // Set lateralOffsetRef to project from the new path segment coordinates
-          pathCurve.getPointAt(closestFraction, tempVector);
-          pathCurve.getTangentAt(closestFraction, _tangent);
-          _lateral.crossVectors(_tangent, _up).normalize();
-          
-          const diff = new THREE.Vector3().subVectors(finalHangingPos, tempVector);
-          lateralOffsetRef.current = diff.dot(_lateral);
+    if (currentlyKinematic) {
+      if (currentlyZipping && storeState.webZipTarget) {
+        // Initialize zip start position
+        if (!dynamicSwingStartRef.current) {
+          dynamicSwingStartRef.current = new THREE.Vector3(currentBodyPos.x, currentBodyPos.y, currentBodyPos.z);
+          useStore.setState({ webZipStart: dynamicSwingStartRef.current });
+          webZipProgressRef.current = 0;
         }
 
-        storeState.finishWebZip();
-      }
-    } else if (currentAction === 'hanging') {
-      // Lock position at the wall clinging coordinates
-      if (storeState.freePosition) {
-        finalX = storeState.freePosition.x;
-        finalY = storeState.freePosition.y;
-        finalZ = storeState.freePosition.z;
-      } else {
-        const charPos = storeState.characterPosition;
-        finalX = charPos[0];
-        finalY = charPos[1];
-        finalZ = charPos[2];
-      }
+        // Progress zip physics interpolation (slowed down for smoother swing animation blending)
+        webZipProgressRef.current = Math.min(webZipProgressRef.current + dt * 1.25, 1);
+        const t = webZipProgressRef.current;
+        const startPos = dynamicSwingStartRef.current;
 
-      // Face the wall
-      if (storeState.webZipTarget && storeState.freePosition) {
-        const dirToWall = storeState.webZipTarget.clone().sub(storeState.freePosition);
-        dirToWall.y = 0;
-        if (dirToWall.lengthSq() > 0.001) {
-          const targetAngle = Math.atan2(dirToWall.x, dirToWall.z);
-          _targetQuat.setFromAxisAngle(_up, targetAngle);
-          group.current.quaternion.copy(_targetQuat); // snap facing the wall
-        }
-      }
-    } else if (isDynamic && storeState.dynamicSwingTarget) {
-      // Dynamic Aimed Swing logic
-      if (!dynamicSwingStartRef.current) {
-        dynamicSwingStartRef.current = group.current.position.clone();
-        dynamicSwingStartFracRef.current = fractionRef.current;
-        useStore.setState({ dynamicSwingStart: dynamicSwingStartRef.current });
-      }
-
-      // Progress swing
-      swingProgressRef.current = Math.min(swingProgressRef.current + dt * 1.15, 1);
-      const t = swingProgressRef.current;
-
-      const startPos = dynamicSwingStartRef.current;
-
-      if (currentScene === 'city') {
-        // In free roaming mode, swing towards the target horizontally and land under it
-        const targetLand = storeState.dynamicSwingTarget.clone();
-        targetLand.y = 0; // land on ground
+        // Trajectory with a pendulum swing-like lift arc
+        finalX = THREE.MathUtils.lerp(startPos.x, storeState.webZipTarget.x, t);
+        finalZ = THREE.MathUtils.lerp(startPos.z, storeState.webZipTarget.z, t);
         
-        finalX = THREE.MathUtils.lerp(startPos.x, targetLand.x, t);
-        finalZ = THREE.MathUtils.lerp(startPos.z, targetLand.z, t);
-        
-        const liftAmount = Math.max(5.0, (storeState.dynamicSwingTarget.y) * 0.5);
+        const liftAmount = 2.2;
         const swingY = Math.sin(t * Math.PI) * liftAmount;
-        finalY = THREE.MathUtils.lerp(startPos.y, 0, t) + swingY;
+        finalY = THREE.MathUtils.lerp(startPos.y, storeState.webZipTarget.y, t) + swingY;
 
-        // Orient facing forward towards target
-        const dirToTarget = targetLand.clone().sub(startPos);
+        // Play swing start and end animations during the zip
+        if (t < 0.6) {
+          const anim = animMap.swingStart || animMap.jumpUp || animMap.idle;
+          if (anim && currentAnimName.current !== anim) {
+            playAnimation(anim, { loop: false, clampWhenFinished: true, fadeIn: 0.15 });
+          }
+        } else {
+          const anim = animMap.swingEnd || animMap.jumpUp || animMap.idle;
+          if (anim && currentAnimName.current !== anim) {
+            playAnimation(anim, { loop: false, clampWhenFinished: true, fadeIn: 0.15 });
+          }
+        }
+
+        // Orient Spider-Man facing the zip target horizontally
+        const dirToTarget = storeState.webZipTarget.clone().sub(startPos);
         dirToTarget.y = 0;
         if (dirToTarget.lengthSq() > 0.001) {
           const targetAngle = Math.atan2(dirToTarget.x, dirToTarget.z);
           _targetQuat.setFromAxisAngle(_up, targetAngle);
-          group.current.quaternion.slerp(_targetQuat, 12 * dt);
+          const rotSlerp = THREE.MathUtils.clamp(1 - Math.pow(1 - 0.22, dt * 60), 0, 1);
+          group.current.quaternion.slerp(_targetQuat, rotSlerp);
         }
 
-        // End dynamic swing -> update freePosition directly to landing spot
+        // Complete zip and land
+        if (t >= 1) {
+          dynamicSwingStartRef.current = null;
+          webZipProgressRef.current = 0;
+
+          // Offset 0.45m away from the wall to prevent clipping
+          const offsetDir = new THREE.Vector3().subVectors(startPos, storeState.webZipTarget).normalize();
+          const finalHangingPos = storeState.webZipTarget.clone().addScaledVector(offsetDir, 0.45);
+          useStore.setState({ freePosition: finalHangingPos });
+
+          // Update path fraction & lateral offset in Alley scene so we release/drop down locally
+          if (currentScene !== 'city' && pathCurve) {
+            let minDistance = Infinity;
+            let closestFraction = 0;
+            const samples = 100;
+            const tempVector = new THREE.Vector3();
+            
+            for (let i = 0; i <= samples; i++) {
+              const sampleT = i / samples;
+              pathCurve.getPointAt(sampleT, tempVector);
+              const dist = tempVector.distanceTo(finalHangingPos);
+              if (dist < minDistance) {
+                minDistance = dist;
+                closestFraction = sampleT;
+              }
+            }
+            fractionRef.current = closestFraction;
+            
+            // Set lateralOffsetRef to project from the new path segment coordinates
+            pathCurve.getPointAt(closestFraction, tempVector);
+            pathCurve.getTangentAt(closestFraction, _tangent);
+            _lateral.crossVectors(_tangent, _up).normalize();
+            
+            const diff = new THREE.Vector3().subVectors(finalHangingPos, tempVector);
+            lateralOffsetRef.current = diff.dot(_lateral);
+          }
+
+          storeState.finishWebZip();
+        }
+      } else if (currentAction === 'hanging') {
+        // Lock position at the wall clinging coordinates
+        if (storeState.freePosition) {
+          finalX = storeState.freePosition.x;
+          finalY = storeState.freePosition.y;
+          finalZ = storeState.freePosition.z;
+        } else {
+          finalX = currentBodyPos.x;
+          finalY = currentBodyPos.y;
+          finalZ = currentBodyPos.z;
+        }
+
+        // Face the wall
+        if (storeState.webZipTarget && storeState.freePosition) {
+          const dirToWall = storeState.webZipTarget.clone().sub(storeState.freePosition);
+          dirToWall.y = 0;
+          if (dirToWall.lengthSq() > 0.001) {
+            const targetAngle = Math.atan2(dirToWall.x, dirToWall.z);
+            _targetQuat.setFromAxisAngle(_up, targetAngle);
+            group.current.quaternion.copy(_targetQuat); // snap facing the wall
+          }
+        }
+      } else if (isDynamic && storeState.dynamicSwingTarget) {
+        // Dynamic Aimed Swing logic
+        if (!dynamicSwingStartRef.current) {
+          dynamicSwingStartRef.current = new THREE.Vector3(currentBodyPos.x, currentBodyPos.y, currentBodyPos.z);
+          dynamicSwingStartFracRef.current = fractionRef.current;
+          useStore.setState({ dynamicSwingStart: dynamicSwingStartRef.current });
+          swingProgressRef.current = 0;
+
+          // Raycast once at the start of the swing to find the ground height!
+          let targetGroundY = 0;
+          const targets = storeState.aimTargets || [];
+          if (targets.length > 0) {
+            const rayStart = new THREE.Vector3(storeState.dynamicSwingTarget.x, 200, storeState.dynamicSwingTarget.z);
+            const rayDir = new THREE.Vector3(0, -1, 0);
+            raycaster.set(rayStart, rayDir);
+            const intersects = raycaster.intersectObjects(targets, true);
+            const validHit = intersects.find((hit) => hit.point.y > 0.05 && hit.point.y < 100);
+            if (validHit) {
+              targetGroundY = validHit.point.y;
+            }
+          }
+          dynamicSwingTargetGroundYRef.current = targetGroundY;
+        }
+
+        // Progress swing (reduced speed from 1.15 to 0.85)
+        swingProgressRef.current = Math.min(swingProgressRef.current + dt * 0.85, 1);
+        const t = swingProgressRef.current;
+        const startPos = dynamicSwingStartRef.current;
+
+        // Update swingPhase in store based on progress t (start and end only)
+        let currentPhase = 'start';
+        if (t >= 0.75) {
+          currentPhase = 'end';
+        }
+        if (storeState.swingPhase !== currentPhase) {
+          useStore.setState({ swingPhase: currentPhase });
+        }
+
+        if (currentScene === 'city') {
+          // In free roaming mode, swing towards the target horizontally and land under it or on the building's roof
+          const targetLand = storeState.dynamicSwingTarget.clone();
+          targetLand.y = dynamicSwingTargetGroundYRef.current;
+          
+          finalX = THREE.MathUtils.lerp(startPos.x, targetLand.x, t);
+          finalZ = THREE.MathUtils.lerp(startPos.z, targetLand.z, t);
+          
+          const liftAmount = Math.max(5.0, (storeState.dynamicSwingTarget.y - targetLand.y) * 0.5);
+          const swingY = Math.sin(t * Math.PI) * liftAmount;
+          finalY = THREE.MathUtils.lerp(startPos.y, targetLand.y, t) + swingY;
+
+          // Orient facing forward towards target
+          const dirToTarget = targetLand.clone().sub(startPos);
+          dirToTarget.y = 0;
+          if (dirToTarget.lengthSq() > 0.001) {
+            const targetAngle = Math.atan2(dirToTarget.x, dirToTarget.z);
+            _targetQuat.setFromAxisAngle(_up, targetAngle);
+            const rotSlerp = THREE.MathUtils.clamp(1 - Math.pow(1 - 0.18, dt * 60), 0, 1);
+            group.current.quaternion.slerp(_targetQuat, rotSlerp);
+          }
+
+          // End dynamic swing -> update freePosition directly to landing spot
+          if (t >= 1) {
+            finishSwing();
+            dynamicSwingStartRef.current = null;
+            useStore.setState({ freePosition: new THREE.Vector3(finalX, targetLand.y, finalZ) });
+          }
+        } else {
+          // Path mode dynamic swing (alley training phase)
+          if (!pathCurve) return;
+          const startFrac = dynamicSwingStartFracRef.current;
+          const targetFrac = Math.min(1.0, startFrac + 0.16);
+          fractionRef.current = THREE.MathUtils.lerp(startFrac, targetFrac, t);
+          pathCurve.getPointAt(fractionRef.current, _posOnCurve);
+          pathCurve.getTangentAt(fractionRef.current, _tangent);
+
+          finalX = THREE.MathUtils.lerp(startPos.x, _posOnCurve.x, t);
+          finalZ = THREE.MathUtils.lerp(startPos.z, _posOnCurve.z, t);
+
+          const liftAmount = Math.max(4.5, (storeState.dynamicSwingTarget.y - _posOnCurve.y) * 0.45);
+          const swingY = Math.sin(t * Math.PI) * liftAmount;
+          finalY = THREE.MathUtils.lerp(startPos.y, _posOnCurve.y, t) + swingY;
+
+          const lateralToBuilding = storeState.dynamicSwingTarget.clone().sub(_posOnCurve);
+          lateralToBuilding.y = 0;
+          const buildingPull = lateralToBuilding.multiplyScalar(Math.sin(t * Math.PI) * 0.22);
+          finalX += buildingPull.x;
+          finalZ += buildingPull.z;
+
+          if (t >= 1) {
+            finishSwing();
+            dynamicSwingStartRef.current = null;
+          }
+        }
+      } else if (currentlySwinging && currentScene === 'city') {
+        // Regular Swing in City scene (kinematic)
+        if (!dynamicSwingStartRef.current) {
+          dynamicSwingStartRef.current = new THREE.Vector3(currentBodyPos.x, currentBodyPos.y, currentBodyPos.z);
+          swingProgressRef.current = 0;
+
+          // Calculate and cache camDir once at the start of the swing
+          const camDir = new THREE.Vector3();
+          state.camera.getWorldDirection(camDir);
+          camDir.y = 0;
+          camDir.normalize();
+          dynamicSwingCamDirRef.current.copy(camDir);
+
+          // Raycast once at the start of the swing to find the landing ground height
+          const targetLand = dynamicSwingStartRef.current.clone().add(camDir.multiplyScalar(8.0));
+          let targetGroundY = 0;
+          const targets = storeState.aimTargets || [];
+          if (targets.length > 0) {
+            const rayStart = new THREE.Vector3(targetLand.x, 200, targetLand.z);
+            const rayDir = new THREE.Vector3(0, -1, 0);
+            raycaster.set(rayStart, rayDir);
+            const intersects = raycaster.intersectObjects(targets, true);
+            const validHit = intersects.find((hit) => hit.point.y > 0.05 && hit.point.y < 100);
+            if (validHit) {
+              targetGroundY = validHit.point.y;
+            }
+          }
+          dynamicSwingTargetGroundYRef.current = targetGroundY;
+        }
+
+        swingProgressRef.current = Math.min(swingProgressRef.current + dt * 0.85, 1);
+        const t = swingProgressRef.current;
+        const startPos = dynamicSwingStartRef.current;
+        const camDir = dynamicSwingCamDirRef.current;
+
+        const targetLand = startPos.clone().add(camDir.clone().multiplyScalar(8.0));
+        targetLand.y = dynamicSwingTargetGroundYRef.current;
+
+        finalX = THREE.MathUtils.lerp(startPos.x, targetLand.x, t);
+        finalZ = THREE.MathUtils.lerp(startPos.z, targetLand.z, t);
+        const swingY = Math.sin(t * Math.PI) * 4.0;
+        finalY = THREE.MathUtils.lerp(startPos.y, targetLand.y, t) + swingY;
+
+        if (camDir.lengthSq() > 0.001) {
+          const targetAngle = Math.atan2(camDir.x, camDir.z);
+          _targetQuat.setFromAxisAngle(_up, targetAngle);
+          const rotSlerp = THREE.MathUtils.clamp(1 - Math.pow(1 - 0.18, dt * 60), 0, 1);
+          group.current.quaternion.slerp(_targetQuat, rotSlerp);
+        }
+
         if (t >= 1) {
           finishSwing();
           dynamicSwingStartRef.current = null;
-          useStore.setState({ freePosition: new THREE.Vector3(finalX, 0, finalZ) });
+          useStore.setState({ freePosition: new THREE.Vector3(finalX, targetLand.y, finalZ) });
         }
       } else {
-        // Path mode dynamic swing (alley training phase)
-        if (!pathCurve) return;
-        const startFrac = dynamicSwingStartFracRef.current;
-        const targetFrac = Math.min(1.0, startFrac + 0.16);
-        fractionRef.current = THREE.MathUtils.lerp(startFrac, targetFrac, t);
-        pathCurve.getPointAt(fractionRef.current, _posOnCurve);
-        pathCurve.getTangentAt(fractionRef.current, _tangent);
+        // Snapped Path Mode (Alley scene training & editor preview)
+        dynamicSwingStartRef.current = null;
 
-        finalX = THREE.MathUtils.lerp(startPos.x, _posOnCurve.x, t);
-        finalZ = THREE.MathUtils.lerp(startPos.z, _posOnCurve.z, t);
+        if (pathCurve) {
+          let targetSpeed = 0;
+          let targetLateral = lateralOffsetRef.current;
 
-        const liftAmount = Math.max(4.5, (storeState.dynamicSwingTarget.y - _posOnCurve.y) * 0.45);
-        const swingY = Math.sin(t * Math.PI) * liftAmount;
-        finalY = THREE.MathUtils.lerp(startPos.y, _posOnCurve.y, t) + swingY;
+          if (currentlySwinging) {
+            targetSpeed = SWING_SPEED;
+          } else {
+            // Speed logic based on W/S or touch controls
+            if (hasForward) {
+              targetSpeed = MOVE_SPEED;
+            } else if (hasBackward) {
+              targetSpeed = -MOVE_SPEED * 0.6;
+            } else {
+              targetSpeed = 0;
+            }
 
-        const lateralToBuilding = storeState.dynamicSwingTarget.clone().sub(_posOnCurve);
-        lateralToBuilding.y = 0;
-        const buildingPull = lateralToBuilding.multiplyScalar(Math.sin(t * Math.PI) * 0.22);
-        finalX += buildingPull.x;
-        finalZ += buildingPull.z;
+            // Lateral offset logic based on A/D or touch controls
+            if (hasLeft) {
+              targetLateral = Math.max(lateralOffsetRef.current - STRAFE_SPEED * dt, -MAX_STRAFE);
+            } else if (hasRight) {
+              targetLateral = Math.min(lateralOffsetRef.current + STRAFE_SPEED * dt, MAX_STRAFE);
+            }
+          }
 
-        if (t >= 1) {
-          finishSwing();
-          dynamicSwingStartRef.current = null;
+          if (Math.abs(targetSpeed) > Math.abs(speedRef.current)) {
+            speedRef.current = THREE.MathUtils.lerp(speedRef.current, targetSpeed, ACCELERATION * dt);
+          } else {
+            speedRef.current = THREE.MathUtils.lerp(speedRef.current, targetSpeed, DECELERATION * dt);
+          }
+
+          if (Math.abs(speedRef.current) < 0.001) speedRef.current = 0;
+
+          fractionRef.current += speedRef.current * dt;
+          fractionRef.current = THREE.MathUtils.clamp(fractionRef.current, 0, 1);
+
+          pathCurve.getPointAt(fractionRef.current, _posOnCurve);
+          pathCurve.getTangentAt(fractionRef.current, _tangent);
+          _lateral.crossVectors(_tangent, _up).normalize();
+
+          // Cast rays to detect walls in the Alley/Path mode and prevent clipping
+          let limitLeft = -MAX_STRAFE;
+          let limitRight = MAX_STRAFE;
+          const targets = storeState.aimTargets || [];
+          if (targets.length > 0) {
+            const rayStart = _posOnCurve.clone().add(new THREE.Vector3(0, 0.8, 0)); // hip height
+            
+            // Raycast right
+            const rayDirRight = _lateral.clone().normalize();
+            raycaster.set(rayStart, rayDirRight);
+            const intersectsRight = raycaster.intersectObjects(targets, true);
+            const hitRight = intersectsRight.find(h => h.distance < MAX_STRAFE + 1.0);
+            if (hitRight) {
+              limitRight = Math.max(0.0, hitRight.distance - 0.45);
+            }
+
+            // Raycast left
+            const rayDirLeft = _lateral.clone().negate().normalize();
+            raycaster.set(rayStart, rayDirLeft);
+            const intersectsLeft = raycaster.intersectObjects(targets, true);
+            const hitLeft = intersectsLeft.find(h => h.distance < MAX_STRAFE + 1.0);
+            if (hitLeft) {
+              limitLeft = -Math.max(0.0, hitLeft.distance - 0.45);
+            }
+          }
+
+          // Smoothly center lateral offset if side keys are released
+          if (!hasLeft && !hasRight) {
+            targetLateral = THREE.MathUtils.lerp(lateralOffsetRef.current, 0, 2.0 * dt);
+          }
+
+          // Clamp lateral offset to detected wall limits
+          targetLateral = THREE.MathUtils.clamp(targetLateral, limitLeft, limitRight);
+          lateralOffsetRef.current = targetLateral;
+
+          finalX = _posOnCurve.x + _lateral.x * lateralOffsetRef.current;
+          finalZ = _posOnCurve.z + _lateral.z * lateralOffsetRef.current;
+          finalY = _posOnCurve.y;
+
+          let jumpY = 0;
+          if (currentAction === 'jump') {
+            jumpProgressRef.current = Math.min(jumpProgressRef.current + dt * 1.55, 1);
+            jumpY = Math.sin(jumpProgressRef.current * Math.PI) * 3.0;
+            if (jumpProgressRef.current >= 1) {
+              useStore.setState({ playerAction: 'idle' });
+            }
+          }
+
+          if (currentlySwinging) {
+            swingProgressRef.current = Math.min(swingProgressRef.current + dt * 1.1, 1);
+            const arcT = swingProgressRef.current;
+            swingYRef.current = SWING_LIFT * Math.sin(arcT * Math.PI);
+            finalY += swingYRef.current + jumpY;
+          } else {
+            swingProgressRef.current = 0;
+            swingYRef.current = THREE.MathUtils.lerp(swingYRef.current, 0, 5.0 * dt);
+            finalY += swingYRef.current + jumpY;
+          }
         }
       }
-    } else if (currentScene === 'city') {
-      // ─── Free Roaming Street Movement inside City Scene ───
+
+      // Calculate velocity
+      const currentPos = new THREE.Vector3(finalX, finalY, finalZ);
+      if (dt > 0) {
+        const velocity = new THREE.Vector3()
+          .subVectors(currentPos, prevPositionRef.current)
+          .multiplyScalar(1 / dt);
+        swingVelocityRef.current.copy(velocity);
+      }
+      
+      // Kinematic collision prevention check (only in City Scene to prevent clipping buildings)
+      if (currentScene === 'city' && currentlyKinematic && prevPositionRef.current.lengthSq() > 0.001) {
+        const nextPos = new THREE.Vector3(finalX, finalY, finalZ);
+        const moveDir = new THREE.Vector3().subVectors(nextPos, prevPositionRef.current);
+        const moveDist = moveDir.length();
+        if (moveDist > 0.01) {
+          const targets = storeState.aimTargets || [];
+          raycaster.set(prevPositionRef.current, moveDir.normalize());
+          const intersects = raycaster.intersectObjects(targets, true);
+          const hit = intersects.find(h => h.distance < moveDist + 0.35); // 0.35m buffer
+          if (hit) {
+            const offsetDir = moveDir.clone().negate().normalize();
+            finalX = hit.point.x + offsetDir.x * 0.35;
+            finalY = hit.point.y + offsetDir.y * 0.35;
+            finalZ = hit.point.z + offsetDir.z * 0.35;
+            currentPos.set(finalX, finalY, finalZ);
+            
+            // Cancel swing/zip on collision
+            if (currentlySwinging) {
+              finishSwing();
+            } else if (currentlyZipping) {
+              storeState.finishWebZip();
+            }
+            dynamicSwingStartRef.current = null;
+            useStore.setState({ freePosition: new THREE.Vector3(finalX, finalY, finalZ) });
+          }
+        }
+      }
+
+      prevPositionRef.current.copy(currentPos);
+
+      // Apply translation to kinematic body
+      if (rigidBodyRef.current) {
+        if (rigidBodyRef.current.bodyType() === 2) {
+          rigidBodyRef.current.setNextKinematicTranslation({ x: finalX, y: finalY, z: finalZ });
+          group.current.position.set(0, 0, 0); // Reset fallback offset
+        } else {
+          // Fallback during transition frames
+          group.current.position.set(finalX, finalY, finalZ);
+        }
+      } else {
+        // Fallback during transition frames when rigidBody is null
+        group.current.position.set(finalX, finalY, finalZ);
+      }
+
+      // Sync to store
+      useStore.setState({ characterPosition: [finalX, finalY, finalZ], freePosition: new THREE.Vector3(finalX, finalY, finalZ) });
+      needsVelocitySeedRef.current = true;
+    } else {
+      // Dynamic State (free roaming street/rooftop movement in City scene)
       dynamicSwingStartRef.current = null;
-
-      // 1. Initialize freePosition if null
-      if (!storeState.freePosition) {
-        const startPos = new THREE.Vector3(spiderManPos.x, spiderManPos.y, spiderManPos.z);
-        useStore.setState({ freePosition: startPos });
-        storeState.freePosition = startPos;
+      
+      // Raycast down from capsule center to verify if player is grounded
+      let isGrounded = false;
+      if (rigidBodyRef.current) {
+        const pos = rigidBodyRef.current.translation();
+        const ray = new rapier.Ray(
+          { x: pos.x, y: pos.y + 1.1, z: pos.z }, // capsule center
+          { x: 0, y: -1, z: 0 } // downward
+        );
+        const hit = world.castRay(
+          ray,
+          1.15, // 1.1m center + 0.05m tolerance
+          true,
+          undefined,
+          undefined,
+          undefined,
+          (collider) => !collider.parent() || collider.parent().handle !== rigidBodyRef.current.handle
+        );
+        isGrounded = hit !== null;
+      }
+      
+      // Update playYawRef based on A/D steering inputs
+      const turnSpeed = 3.2; // turn rate in radians/sec
+      if (hasLeft) {
+        playYawRef.current += turnSpeed * dt;
+      }
+      if (hasRight) {
+        playYawRef.current -= turnSpeed * dt;
       }
 
-      // 2. Get camera direction projected horizontally
-      const camDir = new THREE.Vector3();
-      state.camera.getWorldDirection(camDir);
-      camDir.y = 0;
-      camDir.normalize();
-
-      const camRight = new THREE.Vector3();
-      camRight.crossVectors(camDir, _up).normalize();
-
-      // 3. Compute movement speed & direction
-      let moveSpeedVal = 10.5; // standard speed (faster, less constrained)
-      if (currentlySwinging) {
-        moveSpeedVal = 18.0; // faster while swinging
-      } else if (currentAction === 'runBackward') {
-        moveSpeedVal = 5.5; // slower backward
+      // Compute movement speed & direction
+      let moveSpeedVal = 6.4; // standard speed (increased from 4.8)
+      if (hasBackward && !hasForward) {
+        moveSpeedVal = 3.2; // slower backward (increased from 2.4)
       }
 
+      const charFacingDir = new THREE.Vector3(0, 0, 1).applyAxisAngle(_up, playYawRef.current).normalize();
       const moveVec = new THREE.Vector3(0, 0, 0);
-      if (currentAction === 'runForward' || currentlySwinging) {
-        moveVec.add(camDir);
-      } else if (currentAction === 'runBackward') {
-        moveVec.add(camDir.clone().negate());
-      } else if (currentAction === 'strafeLeft') {
-        moveVec.add(camRight.clone().negate());
-      } else if (currentAction === 'strafeRight') {
-        moveVec.add(camRight);
+
+      if (hasForward) {
+        moveVec.copy(charFacingDir);
+      } else if (hasBackward) {
+        moveVec.copy(charFacingDir).negate();
       }
+
+      // Read current velocity from RigidBody to preserve gravity (y component)
+      const currentVel = rigidBodyRef.current ? rigidBodyRef.current.linvel() : { x: 0, y: 0, z: 0 };
+      
+      let targetX = 0;
+      let targetZ = 0;
 
       if (moveVec.lengthSq() > 0.001) {
-        moveVec.normalize().multiplyScalar(moveSpeedVal * dt);
-        // Smoothly rotate Spider-Man to face movement direction
-        const targetAngle = Math.atan2(moveVec.x, moveVec.z);
-        _targetQuat.setFromAxisAngle(_up, targetAngle);
-        group.current.quaternion.slerp(_targetQuat, 12 * dt);
+        moveVec.normalize().multiplyScalar(moveSpeedVal);
+        targetX = moveVec.x;
+        targetZ = moveVec.z;
+        speedRef.current = MOVE_SPEED;
+      } else {
+        targetX = 0;
+        targetZ = 0;
+        speedRef.current = 0;
       }
 
-      // 4. Bounding box sliding collision check (solid buildings)
-      const currentPos = storeState.freePosition.clone();
-      const targetPos = currentPos.clone().add(moveVec);
+      // Smoothly rotate Spider-Man to face playYawRef.current (or negated if moonwalking)
+      const targetAngle = currentAction === 'moonwalk' ? (playYawRef.current + Math.PI) : playYawRef.current;
+      _targetQuat.setFromAxisAngle(_up, targetAngle);
+      const rotSlerp = THREE.MathUtils.clamp(1 - Math.pow(1 - 0.18, dt * 60), 0, 1);
+      group.current.quaternion.slerp(_targetQuat, rotSlerp);
 
-      const testPosX = new THREE.Vector3(targetPos.x, currentPos.y, currentPos.z);
-      const testPosZ = new THREE.Vector3(currentPos.x, currentPos.y, targetPos.z);
+      let targetYVelocity = currentVel.y;
 
-      let collidesX = false;
-      let collidesZ = false;
-
-      const obstacles = storeState.solidObstacles || [];
-      const playerRadius = 0.22; // smaller collision buffer for fluid sliding around corners
-
-      for (let i = 0; i < obstacles.length; i++) {
-        const box = obstacles[i];
-        // Only test bounding boxes within proximity range (5m) to ensure 60fps
-        const dist = box.distanceToPoint(currentPos);
-        if (dist < 5.0) {
-          const paddedBox = box.clone().expandByScalar(playerRadius);
-          if (!collidesX && paddedBox.containsPoint(testPosX)) {
-            collidesX = true;
+      // Handle edge-triggered jump
+      if (currentAction === 'jump') {
+        if (isGrounded) {
+          if (!jumpImpulseAppliedRef.current) {
+            targetYVelocity = 8.5; // Apply vertical jump impulse
+            jumpImpulseAppliedRef.current = true;
+          } else {
+            // Transition back to idle when we hit the ground again and downward velocity ceases
+            if (currentVel.y <= 0.1) {
+              useStore.setState({ playerAction: 'idle' });
+              jumpImpulseAppliedRef.current = false;
+            }
           }
-          if (!collidesZ && paddedBox.containsPoint(testPosZ)) {
-            collidesZ = true;
-          }
-          if (collidesX && collidesZ) break;
         }
+      } else {
+        jumpImpulseAppliedRef.current = false;
       }
 
-      if (!collidesX) currentPos.x = targetPos.x;
-      if (!collidesZ) currentPos.z = targetPos.z;
-
-      // Clamp absolute world boundaries (larger region to allow freedom of exploration)
-      currentPos.x = THREE.MathUtils.clamp(currentPos.x, -120, 120);
-      currentPos.z = THREE.MathUtils.clamp(currentPos.z, -120, 120);
-
-      // 5. Vertical swing leap calculations
-      if (currentlySwinging) {
-        swingProgressRef.current = Math.min(swingProgressRef.current + dt * 1.5, 1);
-        const swingY = Math.sin(swingProgressRef.current * Math.PI) * 4.0;
-        currentPos.y = swingY;
-      } else {
-        swingProgressRef.current = 0;
-        currentPos.y = THREE.MathUtils.lerp(currentPos.y, 0, 5.0 * dt);
-      }
-
-      // 6. Save back to store & set coordinates
-      useStore.setState({ freePosition: currentPos });
-
-      finalX = currentPos.x;
-      finalY = currentPos.y;
-      finalZ = currentPos.z;
-
-      // Fake speed value for running animations
-      speedRef.current = moveVec.lengthSq() > 0.0001 ? MOVE_SPEED : 0;
-    } else {
-      // ─── Snapped Path Mode (Alley scene training & editor preview) ───
-      dynamicSwingStartRef.current = null;
-
-      if (!pathCurve) return;
-
-      let targetSpeed = 0;
-      let targetLateral = lateralOffsetRef.current;
-
-      if (currentlySwinging) {
-        targetSpeed = SWING_SPEED;
-      } else {
-        switch (currentAction) {
-          case 'runForward':
-            targetSpeed = MOVE_SPEED;
-            break;
-          case 'runBackward':
-            targetSpeed = -MOVE_SPEED * 0.6;
-            break;
-          case 'strafeLeft':
-            targetLateral = Math.max(lateralOffsetRef.current - STRAFE_SPEED * dt, -MAX_STRAFE);
-            break;
-          case 'strafeRight':
-            targetLateral = Math.min(lateralOffsetRef.current + STRAFE_SPEED * dt, MAX_STRAFE);
-            break;
-          default:
-            targetSpeed = 0;
-            break;
+      // Apply linear velocity to dynamic RigidBody
+      if (rigidBodyRef.current) {
+        rigidBodyRef.current.setLinvel({ x: targetX, y: targetYVelocity, z: targetZ }, true);
+        
+        // Ensure local group position is centered at [0, 0, 0] to avoid visual-physical misalignment
+        if (group.current) {
+          group.current.position.set(0, 0, 0);
         }
+        
+        // Sync position back to store
+        const pos = rigidBodyRef.current.translation();
+        useStore.setState({ characterPosition: [pos.x, pos.y, pos.z], freePosition: new THREE.Vector3(pos.x, pos.y, pos.z) });
+        
+        // Save current position for velocity tracking
+        prevPositionRef.current.set(pos.x, pos.y, pos.z);
+        
+        finalX = pos.x;
+        finalY = pos.y;
+        finalZ = pos.z;
       }
 
-      // Smooth speed ramping
-      if (Math.abs(targetSpeed) > Math.abs(speedRef.current)) {
-        speedRef.current = THREE.MathUtils.lerp(speedRef.current, targetSpeed, ACCELERATION * dt);
-      } else {
-        speedRef.current = THREE.MathUtils.lerp(speedRef.current, targetSpeed, DECELERATION * dt);
-      }
-
-      if (Math.abs(speedRef.current) < 0.001) speedRef.current = 0;
-
-      // Update path position fraction
-      fractionRef.current += speedRef.current * dt;
-      fractionRef.current = THREE.MathUtils.clamp(fractionRef.current, 0, 1);
-
-      // Return to center when not strafing
-      if (currentAction !== 'strafeLeft' && currentAction !== 'strafeRight') {
-        targetLateral = THREE.MathUtils.lerp(lateralOffsetRef.current, 0, 2.0 * dt);
-      }
-      lateralOffsetRef.current = targetLateral;
-
-      // Compute standard positions
-      pathCurve.getPointAt(fractionRef.current, _posOnCurve);
-      pathCurve.getTangentAt(fractionRef.current, _tangent);
-      _lateral.crossVectors(_tangent, _up).normalize();
-
-      finalX = _posOnCurve.x + _lateral.x * lateralOffsetRef.current;
-      finalZ = _posOnCurve.z + _lateral.z * lateralOffsetRef.current;
-      finalY = _posOnCurve.y;
-
-      // Normal vertical swing arc
-      if (currentlySwinging) {
-        swingProgressRef.current = Math.min(swingProgressRef.current + dt * 1.5, 1);
-        const arcT = swingProgressRef.current;
-        swingYRef.current = SWING_LIFT * Math.sin(arcT * Math.PI);
-        finalY += swingYRef.current;
-      } else {
-        swingProgressRef.current = 0;
-        swingYRef.current = THREE.MathUtils.lerp(swingYRef.current, 0, 5.0 * dt);
-        finalY += swingYRef.current;
+      // Carry over swing exit velocity on the first dynamic frame
+      if (needsVelocitySeedRef.current && rigidBodyRef.current && rigidBodyRef.current.bodyType() === 0) {
+        const exitVel = swingVelocityRef.current.clone();
+        exitVel.clampLength(0, 25);
+        rigidBodyRef.current.wakeUp();
+        rigidBodyRef.current.setLinvel(exitVel, true);
+        needsVelocitySeedRef.current = false;
+        console.log(`[SpiderMan Physics] Velocity seed applied and body woken up:`, exitVel.toArray());
       }
     }
 
@@ -850,9 +1333,9 @@ export default function SpiderMan({
           camDir.y = 0;
           camDir.normalize();
 
-          const moveSpeedVal = 18.0;
+          const moveSpeedVal = 8.0;
           const horizVel = camDir.clone().multiplyScalar(moveSpeedVal);
-          const remainingTime = (1.0 - swingProgressRef.current) / 1.5;
+          const remainingTime = (1.0 - swingProgressRef.current) / 0.85;
 
           const currentPos = storeState.freePosition ? storeState.freePosition.clone() : new THREE.Vector3(finalX, 0, finalZ);
           
@@ -879,16 +1362,31 @@ export default function SpiderMan({
     }
     useStore.setState({ swingLandingPoint: landingPoint });
 
-    // Set player position and scale
-    group.current.position.set(finalX, finalY, finalZ);
+    // Set player scale and visual position alignment
     group.current.scale.setScalar(scale);
 
     // Sync position back to store for HUD compass distance calculations
     useStore.setState({ characterPosition: [finalX, finalY, finalZ] });
 
     // ─── 3. Smooth Rotation (Alley Snapped Path mode) ───
-    if (currentScene !== 'city' && (Math.abs(speedRef.current) > 0.01 || isDynamic)) {
-      const lookDir = speedRef.current >= 0 ? _tangent : _tangent.clone().negate();
+    if (currentScene !== 'city' && (Math.abs(speedRef.current) > 0.01 || isDynamic || hasLeft || hasRight)) {
+      const lookDir = new THREE.Vector3();
+      const hasForwardOrBackward = hasForward || hasBackward;
+      
+      if (hasForwardOrBackward) {
+        lookDir.copy(_tangent).multiplyScalar(speedRef.current >= 0 ? 1 : -1);
+        if (hasLeft) {
+          lookDir.addScaledVector(_lateral, -0.6);
+        } else if (hasRight) {
+          lookDir.addScaledVector(_lateral, 0.6);
+        }
+      } else if (hasLeft || hasRight) {
+        lookDir.copy(_lateral).multiplyScalar(hasLeft ? -1 : 1);
+      } else {
+        lookDir.copy(_tangent);
+      }
+      lookDir.normalize();
+
       _lookTarget.copy(group.current.position).add(lookDir);
       _matrix.lookAt(group.current.position, _lookTarget, _up);
       _targetQuat.setFromRotationMatrix(_matrix);
@@ -898,24 +1396,29 @@ export default function SpiderMan({
       const additionalRot = new THREE.Quaternion().setFromAxisAngle(_up, THREE.MathUtils.degToRad(rotYDeg));
       _targetQuat.multiply(additionalRot);
 
-      group.current.quaternion.slerp(_targetQuat, ROTATION_SMOOTHING * dt);
+      const rotSlerp = THREE.MathUtils.clamp(1 - Math.pow(1 - 0.15, dt * 60), 0, 1);
+      group.current.quaternion.slerp(_targetQuat, rotSlerp);
     }
 
     // ─── 4. Camera follow: Normal vs Over-The-Shoulder (OTS) Aiming ───
+    group.current.updateMatrixWorld(true);
     group.current.getWorldPosition(_worldPos);
 
     if (isAiming && !currentlySwinging) {
       if (!justStartedAiming.current) {
-        // Initialize yaw from Spiderman's current rotation
-        const euler = new THREE.Euler().setFromQuaternion(group.current.quaternion, 'YXZ');
-        aimYawRef.current = euler.y;
+        // Initialize yaw from Spiderman's current rotation (only outside city scene to keep aiming view continuous in city)
+        if (currentScene !== 'city') {
+          const euler = new THREE.Euler().setFromQuaternion(group.current.quaternion, 'YXZ');
+          aimYawRef.current = euler.y;
+        }
         aimPitchRef.current = 0;
         justStartedAiming.current = true;
       }
 
       // Rotate Spiderman to face the look direction
       _targetQuat.setFromAxisAngle(_up, aimYawRef.current);
-      group.current.quaternion.slerp(_targetQuat, 10 * dt);
+      const rotSlerp = THREE.MathUtils.clamp(1 - Math.pow(1 - 0.15, dt * 60), 0, 1);
+      group.current.quaternion.slerp(_targetQuat, rotSlerp);
 
       // Rotate vectors by aimYawRef.current
       const rotatedBack = new THREE.Vector3(0, 0, -1).applyAxisAngle(_up, aimYawRef.current).negate();
@@ -927,34 +1430,72 @@ export default function SpiderMan({
         .addScaledVector(rotatedRight, 0.7)
         .addScaledVector(_up, 1.6);
 
-      _camTarget.copy(group.current.position).add(cameraOffset);
-      state.camera.position.lerp(_camTarget, 0.15);
+      _camTarget.copy(_worldPos).add(cameraOffset);
+      const aimLerpFactor = THREE.MathUtils.clamp(1 - Math.pow(1 - 0.15, dt * 60), 0, 1);
+      state.camera.position.lerp(_camTarget, aimLerpFactor);
 
       // Look target is in front of camera along the forward vector with vertical pitch
       const rotatedForward = new THREE.Vector3(0, 0, -1).applyAxisAngle(_up, aimYawRef.current).negate();
       rotatedForward.y += Math.sin(aimPitchRef.current);
       _lookTarget.copy(state.camera.position).add(rotatedForward.multiplyScalar(10));
       state.camera.lookAt(_lookTarget);
+      
+      // Sync play yaw with aim yaw
+      playYawRef.current = aimYawRef.current;
     } else {
       justStartedAiming.current = false;
 
-      // Normal follow camera
+      // Auto-align camera behind character (along path tangent in Alley, character heading in City)
+      const charEuler = new THREE.Euler().setFromQuaternion(group.current.quaternion, 'YXZ');
+      const charYaw = charEuler.y;
+
+      let targetYaw = charYaw;
+      if (currentScene !== 'city' && pathCurve) {
+        const tangentVec = new THREE.Vector3();
+        pathCurve.getTangentAt(fractionRef.current, tangentVec);
+        targetYaw = Math.atan2(tangentVec.x, tangentVec.z);
+      }
+
+      if (!isPointerDownRef.current) {
+        if (currentScene !== 'city') {
+          // Always align camera to path tangent in Alley
+          let diff = targetYaw - aimYawRef.current;
+          diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+          const yawLerp = THREE.MathUtils.clamp(1 - Math.pow(1 - 0.065, dt * 60), 0, 1);
+          aimYawRef.current += diff * yawLerp;
+        } else {
+          // Align camera to Spiderman's back in the City scene
+          let diff = playYawRef.current - aimYawRef.current;
+          diff = Math.atan2(Math.sin(diff), Math.cos(diff));
+          const yawLerp = THREE.MathUtils.clamp(1 - Math.pow(1 - 0.05, dt * 60), 0, 1);
+          aimYawRef.current += diff * yawLerp;
+        }
+      }
+
+      // Normal follow camera (unified rotation-relative camera for both Alley and City)
       const camOffX = cameraCtrl?.camera_offset_x ?? 0;
       const camOffY = cameraCtrl?.camera_offset_y ?? 2;
       const camOffZ = cameraCtrl?.camera_offset_z ?? 5;
       const lerp = cameraCtrl?.camera_lerp ?? 0.08;
 
-      const dynamicSwingHeight = isDynamic ? (finalY - _posOnCurve.y) : (currentScene === 'city' ? finalY : swingYRef.current);
+      const dynamicSwingHeight = isDynamic ? (finalY - _posOnCurve.y) : (currentScene === 'city' ? 0 : swingYRef.current);
 
-      _camTarget.set(
-        _worldPos.x + camOffX,
-        _worldPos.y + camOffY + dynamicSwingHeight * 0.5,
-        _worldPos.z + camOffZ
-      );
-      state.camera.position.lerp(_camTarget, lerp);
+      const angleY = aimYawRef.current;
+      const rotatedBack = new THREE.Vector3(0, 0, -1).applyAxisAngle(_up, angleY);
+      const rotatedRight = new THREE.Vector3(1, 0, 0).applyAxisAngle(_up, angleY);
 
-      _lookTarget.set(_worldPos.x, _worldPos.y + 1, _worldPos.z);
-      state.camera.lookAt(_lookTarget);
+      _camTarget.copy(_worldPos)
+        .addScaledVector(rotatedBack, camOffZ)
+        .addScaledVector(rotatedRight, camOffX)
+        .addScaledVector(_up, camOffY + dynamicSwingHeight * 0.5);
+
+      const frameLerpFactor = THREE.MathUtils.clamp(1 - Math.pow(1 - lerp, dt * 60), 0, 1);
+      state.camera.position.lerp(_camTarget, frameLerpFactor);
+
+      const rawLookTarget = new THREE.Vector3(_worldPos.x, _worldPos.y + 1, _worldPos.z);
+      const lookTargetLerp = THREE.MathUtils.clamp(1 - Math.pow(1 - 0.15, dt * 60), 0, 1);
+      smoothedLookTargetRef.current.lerp(rawLookTarget, lookTargetLerp);
+      state.camera.lookAt(smoothedLookTargetRef.current);
     }
 
     // ─── 5. Dynamic Camera FOV Aiming Zoom ───
@@ -1139,13 +1680,17 @@ export default function SpiderMan({
 
   const activeFillDistance = charLight.match_scene ? 0.2 : charLight.fill_distance;
 
-  const activeRimColor = charLight.match_scene
-    ? (isAlley ? (neonCtrl?.neon3_color ?? '#ff0055') : '#88ccff')
-    : charLight.rim_color;
+  const activeRimColor = useStore.getState().activeShowcaseProject
+    ? '#00f3ff'
+    : (charLight.match_scene
+        ? (isAlley ? (neonCtrl?.neon3_color ?? '#ff0055') : '#88ccff')
+        : charLight.rim_color);
 
-  const activeRimIntensity = charLight.match_scene
-    ? (isAlley ? 5 : 6)
-    : charLight.rim_intensity;
+  const activeRimIntensity = useStore.getState().activeShowcaseProject
+    ? 15
+    : (charLight.match_scene
+        ? (isAlley ? 5 : 6)
+        : charLight.rim_intensity);
 
   const activeRimPos = charLight.match_scene
     ? [0.03, 0.03, -0.04]
@@ -1156,72 +1701,82 @@ export default function SpiderMan({
   return (
     <>
       {/* Spider-Man model */}
-      <group
-        ref={group}
-        {...props}
-        dispose={null}
-        onClick={(e) => {
-          if (editorMode && onSelect) {
-            e.stopPropagation();
-            onSelect();
-          }
-        }}
+      <RigidBody
+        ref={rigidBodyRef}
+        key={editorMode ? `editor-${currentScene}` : `play-${currentScene}`}
+        type={getBodyType()}
+        enabledRotations={[false, false, false]}
+        colliders={false}
+        position={editorMode ? [0, 0, 0] : initialPosition}
       >
-        <primitive object={scene} dispose={null} />
-
-        {/* ─── Character Lighting — dynamic environment or manual ─── */}
-        <group>
-          {/* Key light */}
-          <pointLight
-            position={activeKeyPos}
-            intensity={activeKeyIntensity}
-            color={activeKeyColor}
-            distance={activeKeyDistance}
-            decay={2}
-          />
-          {/* Fill light */}
-          <pointLight
-            position={activeFillPos}
-            intensity={activeFillIntensity}
-            color={activeFillColor}
-            distance={activeFillDistance}
-            decay={2}
-          />
-          {/* Rim light */}
-          <pointLight
-            position={activeRimPos}
-            intensity={activeRimIntensity}
-            color={activeRimColor}
-            distance={activeRimDistance}
-            decay={2}
-          />
-        </group>
-
-
-
-        {/* Selection indicator */}
-        {editorMode && isSelected && (
-          <mesh position={[0, 0.025, 0]}>
-            <sphereGeometry args={[0.002, 8, 8]} />
-            <meshBasicMaterial color="#00f3ff" />
-          </mesh>
-        )}
-        {/* Label (always mounted, hidden via visibility style to prevent Drei Html removeChild crashes) */}
-        <Html
-          center
-          position={[0, 0.03, 0]}
-          distanceFactor={0.08}
-          style={{
-            pointerEvents: 'none',
-            display: editorMode ? 'block' : 'none'
+        <group
+          ref={group}
+          {...props}
+          dispose={null}
+          onClick={(e) => {
+            if (editorMode && onSelect) {
+              e.stopPropagation();
+              onSelect();
+            }
           }}
         >
-          <div className="editor-3d-label label-spider">
-            Spider-Man
-            {activeAnimation && <span className="label-anim"> — {activeAnimation}</span>}
-          </div>
-        </Html>
-      </group>
+          <primitive object={scene} dispose={null} />
+
+          {/* ─── Character Lighting — dynamic environment or manual ─── */}
+          <group>
+            {/* Key light */}
+            <pointLight
+              position={activeKeyPos}
+              intensity={activeKeyIntensity}
+              color={activeKeyColor}
+              distance={activeKeyDistance}
+              decay={2}
+            />
+            {/* Fill light */}
+            <pointLight
+              position={activeFillPos}
+              intensity={activeFillIntensity}
+              color={activeFillColor}
+              distance={activeFillDistance}
+              decay={2}
+            />
+            {/* Rim light */}
+            <pointLight
+              position={activeRimPos}
+              intensity={activeRimIntensity}
+              color={activeRimColor}
+              distance={activeRimDistance}
+              decay={2}
+            />
+          </group>
+
+
+
+          {/* Selection indicator */}
+          {editorMode && isSelected && (
+            <mesh position={[0, 0.025, 0]}>
+              <sphereGeometry args={[0.002, 8, 8]} />
+              <meshBasicMaterial color="#00f3ff" />
+            </mesh>
+          )}
+          {/* Label (always mounted, hidden via visibility style to prevent Drei Html removeChild crashes) */}
+          <Html
+            center
+            position={[0, 0.03, 0]}
+            distanceFactor={0.08}
+            style={{
+              pointerEvents: 'none',
+              display: editorMode ? 'block' : 'none'
+            }}
+          >
+            <div className="editor-3d-label label-spider">
+              Spider-Man
+              {activeAnimation && <span className="label-anim"> — {activeAnimation}</span>}
+            </div>
+          </Html>
+        </group>
+        {!editorMode && <CapsuleCollider args={[0.8, 0.3]} position={[0, 1.1, 0]} />}
+      </RigidBody>
 
       {/* Swing Web Line */}
       <line ref={swingWebRef}>

@@ -9,6 +9,7 @@ const KEY_LEFT = new Set(['a', 'A', 'ArrowLeft']);
 const KEY_RIGHT = new Set(['d', 'D', 'ArrowRight']);
 const KEY_SWING = new Set([' ']); // Space
 const KEY_SHOOT = new Set(['e', 'E']);
+const KEY_JUMP = new Set(['j', 'J']);
 const KEY_MOONWALK = new Set(['m', 'M']);
 const KEY_DANCE = new Set(['h', 'H']);
 
@@ -57,6 +58,7 @@ export default function GameControls() {
   // ─── Keyboard Handlers (use getState() to avoid stale closures) ───
   useEffect(() => {
     const handleKeyDown = (e) => {
+      if (useStore.getState().activeShowcaseProject) return;
       // Don't capture when typing in inputs or Leva
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
       // Skip if inside Leva panel
@@ -66,6 +68,7 @@ export default function GameControls() {
       keysRef.current.add(e.key);
 
       const store = useStore.getState();
+      store.pressKey(e.key);
 
       // Release from hanging if any key is pressed
       if (store.playerAction === 'hanging') {
@@ -86,12 +89,21 @@ export default function GameControls() {
         }
       }
 
+      // Jump trigger (J key)
+      if (KEY_JUMP.has(e.key)) {
+        e.preventDefault();
+        if (!store.isSwinging && store.playerAction !== 'jump') {
+          store.setPlayerAction('jump');
+        }
+        return;
+      }
+
       // Swing toggle (Space)
       if (KEY_SWING.has(e.key)) {
         e.preventDefault();
         if (store.isAiming) {
           if (store.hasTarget && store.targetPoint) {
-            store.startWebZip(store.targetPoint);
+            store.startDynamicSwing(store.targetPoint);
           }
           store.setAiming(false);
         } else if (!store.isSwinging) {
@@ -120,9 +132,11 @@ export default function GameControls() {
     };
 
     const handleKeyUp = (e) => {
+      if (useStore.getState().activeShowcaseProject) return;
       keysRef.current.delete(e.key);
 
       const store = useStore.getState();
+      store.releaseKey(e.key);
 
       // Swing end
       if (KEY_SWING.has(e.key) && store.isSwinging) {
@@ -134,7 +148,7 @@ export default function GameControls() {
       if (KEY_SHOOT.has(e.key)) {
         if (store.isAiming) {
           if (store.hasTarget && store.targetPoint) {
-            store.startWebZip(store.targetPoint);
+            store.startDynamicSwing(store.targetPoint);
           }
           store.setAiming(false);
         }
@@ -152,13 +166,14 @@ export default function GameControls() {
     };
 
     const handlePointerDown = (e) => {
+      if (useStore.getState().activeShowcaseProject) return;
       // Don't capture when clicking on UI or buttons
       if (e.target.tagName === 'BUTTON' || e.target.closest('.editor-panel') || e.target.closest('.game-controls-container') || e.target.closest('[class*="leva"]')) return;
       const store = useStore.getState();
       if (store.isAiming && !store.isSwinging) {
         e.preventDefault();
         if (store.hasTarget && store.targetPoint) {
-          store.startWebZip(store.targetPoint);
+          store.startDynamicSwing(store.targetPoint);
         }
         store.setAiming(false);
       }
@@ -178,6 +193,7 @@ export default function GameControls() {
   useEffect(() => {
     const onBlur = () => {
       keysRef.current.clear();
+      useStore.setState({ activeKeys: new Set() });
       const store = useStore.getState();
       if (store.isAiming) store.setAiming(false);
       if (!store.isSwinging) store.setPlayerAction('idle');
@@ -188,6 +204,7 @@ export default function GameControls() {
 
   // ─── Touch Button Handlers ───
   const handleTouchAction = useCallback((action) => {
+    if (useStore.getState().activeShowcaseProject) return;
     const store = useStore.getState();
     if (action === 'webShoot') {
       if (!store.isSwinging) {
@@ -212,11 +229,12 @@ export default function GameControls() {
   }, []);
 
   const handleTouchEnd = useCallback((action) => {
+    if (useStore.getState().activeShowcaseProject) return;
     const store = useStore.getState();
     if (action === 'webShoot') {
       if (store.isAiming) {
         if (store.hasTarget && store.targetPoint) {
-          store.startWebZip(store.targetPoint);
+          store.startDynamicSwing(store.targetPoint);
         }
         store.setAiming(false);
       }
@@ -230,6 +248,7 @@ export default function GameControls() {
   }, []);
 
   const handleSwingTouch = useCallback(() => {
+    if (useStore.getState().activeShowcaseProject) return;
     const store = useStore.getState();
     if (store.playerAction === 'hanging') {
       store.startSwing();
@@ -237,7 +256,7 @@ export default function GameControls() {
     }
     if (store.isAiming) {
       if (store.hasTarget && store.targetPoint) {
-        store.startWebZip(store.targetPoint);
+        store.startDynamicSwing(store.targetPoint);
       }
       store.setAiming(false);
     } else if (!store.isSwinging) {
@@ -313,6 +332,23 @@ export default function GameControls() {
               <span className="swing-label" style={{ fontSize: '0.55rem' }}>{isSwinging ? 'RELEASE' : 'SWING'}</span>
             </button>
 
+            {/* Jump Button */}
+            <button
+              className="game-swing-btn"
+              onTouchStart={(e) => { e.preventDefault(); handleTouchAction('jump'); }}
+              onTouchEnd={(e) => { e.preventDefault(); handleTouchEnd(); }}
+              style={{
+                width: '60px',
+                height: '60px',
+                border: '2px solid rgba(255, 235, 59, 0.3)',
+                background: 'rgba(255, 235, 59, 0.1)',
+                color: '#fbc02d'
+              }}
+            >
+              <span className="swing-icon" style={{ fontSize: '1rem' }}>🦘</span>
+              <span className="swing-label" style={{ fontSize: '0.5rem' }}>JUMP</span>
+            </button>
+
             {/* Web Shoot Button */}
             <button
               className="game-swing-btn"
@@ -381,6 +417,7 @@ export default function GameControls() {
           <div className="kb-row" style={{ marginTop: '8px', display: 'flex', gap: '6px' }}>
             <span className="kb-key wide" style={{ color: 'var(--accent-red)', borderColor: 'rgba(255, 0, 85, 0.3)' }}>SPACE — Swing</span>
             <span className="kb-key" style={{ color: 'var(--accent-cyan)', borderColor: 'rgba(0, 243, 255, 0.3)' }}>E — Web</span>
+            <span className="kb-key" style={{ color: '#fbc02d', borderColor: 'rgba(255, 235, 59, 0.3)' }}>J — Jump</span>
             <span className="kb-key" style={{ color: 'var(--accent-green)', borderColor: 'rgba(0, 255, 136, 0.3)' }}>M — Moonwalk</span>
             <span className="kb-key" style={{ color: 'var(--accent-purple)', borderColor: 'rgba(157, 0, 255, 0.3)' }}>H — Dance</span>
           </div>

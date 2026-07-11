@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
 export default function EditorPanel({
   selectedType,
@@ -16,6 +16,8 @@ export default function EditorPanel({
   neonCityCtrl,
   alleyCtrl,
   currentScene,
+  boardCtrl,
+  holoPlankCtrl,
   onAddPoint,
   onRemovePoint,
   onSegmentAnimationChange,
@@ -29,11 +31,17 @@ export default function EditorPanel({
   onResetToDefaults,
   onSaveFixedSetup,
   onLoadFixedSetup,
+  onSceneChange,
 }) {
   const [showHelp, setShowHelp] = useState(true);
   const [copied, setCopied] = useState(false);
-  const [hasFixedSetup, setHasFixedSetup] = useState(() => !!localStorage.getItem('spisense_fixed_config'));
   const [saveNotify, setSaveNotify] = useState(false);
+  const configKey = currentScene === 'entry' ? 'spisense_fixed_config_alley' : 'spisense_fixed_config_city';
+  const [hasFixedSetup, setHasFixedSetup] = useState(() => !!localStorage.getItem(configKey));
+
+  useEffect(() => {
+    setHasFixedSetup(!!localStorage.getItem(configKey));
+  }, [configKey]);
 
   const activeNeonCtrl = currentScene === 'entry' ? neonAlleyCtrl : neonCityCtrl;
 
@@ -91,6 +99,27 @@ export default function EditorPanel({
       {/* Scrollable content area */}
       <div className="editor-scroll-area">
 
+        {/* Scene Selection */}
+        <div className="editor-section">
+          <h3>🌐 Scene Selection</h3>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              className={`editor-anim-btn ${currentScene === 'entry' ? 'active' : ''}`}
+              onClick={() => onSceneChange?.('entry')}
+              style={{ flex: 1, padding: '10px', fontSize: '0.75rem', borderRadius: '6px', cursor: 'pointer' }}
+            >
+              Alley Scene
+            </button>
+            <button
+              className={`editor-anim-btn ${currentScene === 'city' ? 'active' : ''}`}
+              onClick={() => onSceneChange?.('city')}
+              style={{ flex: 1, padding: '10px', fontSize: '0.75rem', borderRadius: '6px', cursor: 'pointer' }}
+            >
+              City Scene
+            </button>
+          </div>
+        </div>
+
         {/* Selected Info */}
         <div className="editor-section">
           <h3>Selected</h3>
@@ -119,6 +148,20 @@ export default function EditorPanel({
                 x:{activeNeonCtrl?.[`${selectedType}_x`]?.toFixed(1)} 
                 y:{activeNeonCtrl?.[`${selectedType}_y`]?.toFixed(1)} 
                 z:{activeNeonCtrl?.[`${selectedType}_z`]?.toFixed(1)}
+              </span>
+            </div>
+          ) : selectedType === 'board' ? (
+            <div className="editor-selected-info">
+              <span className="editor-badge badge-board" style={{ borderColor: '#00f3ff', color: '#00f3ff', border: '1px solid', padding: '2px 6px', borderRadius: '4px', fontSize: '0.7rem' }}>Board</span>
+              <span className="editor-coords">
+                x:{boardCtrl?.board_x?.toFixed(1)} y:{boardCtrl?.board_y?.toFixed(1)} z:{boardCtrl?.board_z?.toFixed(1)}
+              </span>
+            </div>
+          ) : selectedType === 'holoPlank' ? (
+            <div className="editor-selected-info">
+              <span className="editor-badge badge-holoplank" style={{ borderColor: '#00ff55', color: '#00ff55', border: '1px solid', padding: '2px 6px', borderRadius: '4px', fontSize: '0.7rem' }}>Holo-Plank</span>
+              <span className="editor-coords">
+                x:{holoPlankCtrl?.plank_x?.toFixed(1)} y:{holoPlankCtrl?.plank_y?.toFixed(1)} z:{holoPlankCtrl?.plank_z?.toFixed(1)}
               </span>
             </div>
           ) : (
