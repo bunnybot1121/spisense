@@ -109,5 +109,13 @@ export const useStore = create((set, get) => ({
     keys.delete(key);
     set({ activeKeys: keys });
   },
+
+  // Cinematic Showcase System State
+  activeShowcaseProject: null,
+  showcasePhase: 'idle',
+  showcaseCameraPosition: null,
+  showcaseCameraLookAt: null,
+  showcasePlatformPos: null,
+  showcaseProjectRotationY: 0,
 }));
 

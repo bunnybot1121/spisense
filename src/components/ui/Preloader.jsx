@@ -9,11 +9,12 @@ export default function Preloader() {
   const [fadeOut, setFadeOut] = useState(false);
 
   useEffect(() => {
-    // When progress holds 100 for a bit, switch to entry scene
+    // When progress holds 100 for a bit, switch to entry scene or last saved scene
     if (progress === 100) {
       const timer = setTimeout(() => {
         if (currentScene === 'preloader') {
-          setScene('entry');
+          const savedScene = localStorage.getItem('spisense_saved_scene') || 'entry';
+          setScene(savedScene);
         }
       }, 800); // short delay to show 100%
       return () => clearTimeout(timer);
