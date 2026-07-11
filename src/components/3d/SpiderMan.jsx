@@ -77,6 +77,7 @@ export default function SpiderMan({
   const aimPitchRef = useRef(0);
   const justStartedAiming = useRef(false);
   const lastTouchRef = useRef({ x: 0, y: 0 });
+  const camYawRef = useRef(null); // follow-camera yaw for city free-roam (null = uninitialized)
 
   // ─── Dynamic Swing and Targeting ───
   const raycaster = useMemo(() => new THREE.Raycaster(), []);
@@ -311,22 +312,30 @@ export default function SpiderMan({
     window.addEventListener('touchstart', handleTouchStart);
     window.addEventListener('touchmove', handleTouchMove, { passive: true });
     
-    // Subscribe to aiming state to request PointerLock
-    const unsub = useStore.subscribe(
-      (state) => state.isAiming,
-      (isAiming) => {
-        const canvas = document.querySelector('canvas');
-        if (isAiming) {
-          if (canvas && canvas.requestPointerLock) {
-            canvas.requestPointerLock().catch(() => {});
-          }
-        } else {
-          if (document.exitPointerLock && document.pointerLockElement === canvas) {
-            document.exitPointerLock();
+    // Subscribe to aiming state to request PointerLock.
+    // NOTE: plain zustand subscribe(listener) receives (state, prevState) —
+    // the selector signature only works with the subscribeWithSelector middleware,
+    // which this store doesn't use. Compare prev/next manually instead.
+    const unsub = useStore.subscribe((state, prevState) => {
+      if (state.isAiming === prevState.isAiming) return;
+      const canvas = document.querySelector('canvas');
+      if (state.isAiming) {
+        if (canvas && canvas.requestPointerLock) {
+          try {
+            const maybePromise = canvas.requestPointerLock();
+            if (maybePromise && typeof maybePromise.catch === 'function') {
+              maybePromise.catch(() => {});
+            }
+          } catch (err) {
+            // Pointer lock can fail without a user gesture — aiming still works via mouse deltas
           }
         }
+      } else {
+        if (document.exitPointerLock && document.pointerLockElement === canvas) {
+          document.exitPointerLock();
+        }
       }
-    );
+    });
 
     return () => {
       window.removeEventListener('pointermove', handlePointerMove);
@@ -730,6 +739,25 @@ export default function SpiderMan({
       currentPos.x = THREE.MathUtils.clamp(currentPos.x, -120, 120);
       currentPos.z = THREE.MathUtils.clamp(currentPos.z, -120, 120);
 
+      // ─── Depenetration: if we ended up INSIDE an obstacle (e.g. after landing
+      // from a swing / web-zip release), push out through the nearest face so the
+      // player never gets permanently stuck inside a building collider.
+      if (!currentlySwinging) {
+        for (let i = 0; i < obstacles.length; i++) {
+          const box = obstacles[i];
+          if (box.distanceToPoint(currentPos) > 0.001) continue; // only when inside
+          const pushPosX = (box.max.x + playerRadius) - currentPos.x;
+          const pushNegX = currentPos.x - (box.min.x - playerRadius);
+          const pushPosZ = (box.max.z + playerRadius) - currentPos.z;
+          const pushNegZ = currentPos.z - (box.min.z - playerRadius);
+          const minPush = Math.min(pushPosX, pushNegX, pushPosZ, pushNegZ);
+          if (minPush === pushPosX) currentPos.x = box.max.x + playerRadius + 0.01;
+          else if (minPush === pushNegX) currentPos.x = box.min.x - playerRadius - 0.01;
+          else if (minPush === pushPosZ) currentPos.z = box.max.z + playerRadius + 0.01;
+          else currentPos.z = box.min.z - playerRadius - 0.01;
+        }
+      }
+
       // 5. Vertical swing leap calculations
       if (currentlySwinging) {
         swingProgressRef.current = Math.min(swingProgressRef.current + dt * 1.5, 1);
@@ -917,6 +945,9 @@ export default function SpiderMan({
       _targetQuat.setFromAxisAngle(_up, aimYawRef.current);
       group.current.quaternion.slerp(_targetQuat, 10 * dt);
 
+      // Keep the follow-camera yaw in sync so exiting aim mode doesn't snap the camera
+      camYawRef.current = aimYawRef.current;
+
       // Rotate vectors by aimYawRef.current
       const rotatedBack = new THREE.Vector3(0, 0, -1).applyAxisAngle(_up, aimYawRef.current).negate();
       const rotatedRight = new THREE.Vector3(1, 0, 0).applyAxisAngle(_up, aimYawRef.current);
@@ -946,11 +977,43 @@ export default function SpiderMan({
 
       const dynamicSwingHeight = isDynamic ? (finalY - _posOnCurve.y) : (currentScene === 'city' ? finalY : swingYRef.current);
 
-      _camTarget.set(
-        _worldPos.x + camOffX,
-        _worldPos.y + camOffY + dynamicSwingHeight * 0.5,
-        _worldPos.z + camOffZ
-      );
+      if (currentScene === 'city') {
+        // ─── Third-person orbit camera: stays BEHIND Spider-Man ───
+        // The old fixed world-space offset meant "forward" never changed,
+        // so WASD felt broken (A/D ran sideways forever, camera never turned).
+        const charEuler = new THREE.Euler().setFromQuaternion(group.current.quaternion, 'YXZ');
+        const charYaw = charEuler.y;
+
+        if (camYawRef.current === null) camYawRef.current = charYaw;
+
+        // Only swing the camera behind the character while moving forward or web-swinging.
+        // (Not while strafing/backing up — that would create a rotation feedback loop.)
+        if (currentAction === 'runForward' || currentlySwinging) {
+          let yawDiff = charYaw - camYawRef.current;
+          yawDiff = Math.atan2(Math.sin(yawDiff), Math.cos(yawDiff)); // shortest path
+          camYawRef.current += yawDiff * Math.min(1, 3.0 * dt);
+        }
+
+        // Character forward is +Z rotated by yaw
+        const fwdX = Math.sin(camYawRef.current);
+        const fwdZ = Math.cos(camYawRef.current);
+        // right = up × fwd
+        const rightX = fwdZ;
+        const rightZ = -fwdX;
+
+        _camTarget.set(
+          _worldPos.x - fwdX * camOffZ + rightX * camOffX,
+          _worldPos.y + camOffY + dynamicSwingHeight * 0.5,
+          _worldPos.z - fwdZ * camOffZ + rightZ * camOffX
+        );
+      } else {
+        // Alley scene keeps the original fixed-offset cinematic camera
+        _camTarget.set(
+          _worldPos.x + camOffX,
+          _worldPos.y + camOffY + dynamicSwingHeight * 0.5,
+          _worldPos.z + camOffZ
+        );
+      }
       state.camera.position.lerp(_camTarget, lerp);
 
       _lookTarget.set(_worldPos.x, _worldPos.y + 1, _worldPos.z);

@@ -13,7 +13,9 @@ const KEY_MOONWALK = new Set(['m', 'M']);
 const KEY_DANCE = new Set(['h', 'H']);
 
 function getActionFromKeys(keys) {
-  const hasShoot = [...keys].some((k) => KEY_SHOOT.has(k));
+  // NOTE: E (KEY_SHOOT) is intentionally NOT mapped to an action here.
+  // It is a hold-to-aim modifier handled separately in keydown/keyup,
+  // so holding E + WASD must still resolve to movement actions.
   const hasMoonwalk = [...keys].some((k) => KEY_MOONWALK.has(k));
   const hasDance = [...keys].some((k) => KEY_DANCE.has(k));
   const hasForward = [...keys].some((k) => KEY_FORWARD.has(k));
@@ -21,7 +23,6 @@ function getActionFromKeys(keys) {
   const hasLeft = [...keys].some((k) => KEY_LEFT.has(k));
   const hasRight = [...keys].some((k) => KEY_RIGHT.has(k));
 
-  if (hasShoot) return 'webShoot';
   if (hasMoonwalk) return 'moonwalk';
   if (hasDance) return 'hip_hop';
   if (hasForward) return 'runForward';
